@@ -1,0 +1,1 @@
+/usr/bin/cc -g CMakeFiles/Radio.dir/Client.c.o CMakeFiles/Radio.dir/Server.c.o -o Radio 
