@@ -1,3 +1,0 @@
-/mnt/c/Users/deane/Desktop/Radio/cmake-build-debug/CMakeFiles/Radio.dir
-/mnt/c/Users/deane/Desktop/Radio/cmake-build-debug/CMakeFiles/edit_cache.dir
-/mnt/c/Users/deane/Desktop/Radio/cmake-build-debug/CMakeFiles/rebuild_cache.dir
