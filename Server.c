@@ -10,6 +10,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include "errno.h"
+#include "libgen.h"
 //--------------------------------Defines-------------------------------------------
 #define OFFLINE     0
 #define ESTABLISHED   1
@@ -29,7 +30,7 @@
 typedef struct Station
 {
     char* Filepath;                                     //path to the song on the pc
-    char* Multicast_Ip;                                 //multicast ip for the
+    uint32_t multicastip;                                 //multicast ip for the
 } Station;
 typedef struct Client
 {
@@ -73,7 +74,7 @@ int main(int argc,char* argv[]){
         struct in_addr newaddr;
         newaddr.s_addr=inet_addr(initial_multicastip);
         newaddr=increaseip(newaddr,i);
-        Stations[i].Multicast_Ip=inet_ntoa(newaddr); // need to check how to make new address same address+1
+        Stations[i].multicastip=newaddr.s_addr;
     }
 
     struct sockaddr_in server;
@@ -83,8 +84,6 @@ int main(int argc,char* argv[]){
     memset(server.sin_zero,'\0',sizeof server.sin_zero);
     struct sockaddr_in client;
     fd_set readfdset;
-
-
 
     printf("Creating welcome socket.\n");
     tcp_welcome_socket = socket(AF_INET,SOCK_STREAM,0);
@@ -166,8 +165,12 @@ int main(int argc,char* argv[]){
 
 
         }
+        if(num_clients<MAX_CLIENTS)
+        {
+            FD_SET(tcp_welcome_socket,&readfdset);                                      //insert the welcome socket into the FD set again,only if we have room
+        }
         FD_SET(STDIN_FILENO,&readfdset);                                                //insert STDIN into the FD set again
-        FD_SET(tcp_welcome_socket,&readfdset);                                          //insert the welcome socket into the FD set again
+
     }
     return 0;
 }
@@ -178,6 +181,7 @@ struct in_addr increaseip(struct in_addr initialmulticast,int increment)
     return newaddr;
 
 }
+
 void free_resources(Station* Stations,pthread_t* data_threads)
 {
     /*
@@ -209,13 +213,15 @@ void* stream_song(void* Station_Pointer)
     Station* ourstation;
     ourstation=(Station*)Station_Pointer;
     char* filepath=ourstation->Filepath;
-    char* dest_multicastip=ourstation->Multicast_Ip;
+    uint32_t destip=ourstation->multicastip;
 
 }
 int timeout_client(int client_index)                                //when we need to timeout a client, what to do
 {
-    clients[client_index].client_sock=-1;
+    close(clients[client_index].client_sock);
+    clients[client_index].client_sock=0;
     pthread_cancel(clients[client_index].client_thread);
+    clients[client_index].client_thread=0;
     num_clients--;
 
 }
@@ -364,31 +370,31 @@ void* control_user(void* client_index)
     {
         switch(state)
         {
-            case OFFLINE:
+            case OFFLINE:                                                       // the client has just connected for the first time
             {
                 if(freshconnection==1)                                          // the connection is new-only first time
                 {
-                                                                                // we will send a welcome message
+                    // we will send a welcome message
                     freshconnection=0;
                     send_welcome(index);
-
+                    state=ESTABLISHED;                                          //there is a connection and the client listens to music
 
                 }
                 else
                 {
-                    //freeresources;
+                    timeout_client(index);                               //free the client's resources(sock and thread)
                 }
                 break;
             }
-            case CHANGE_STATION:
+            case CHANGE_STATION:                                                    //the client asked to switch a station
             {
                 break;
             }
-            case ESTABLISHED:
+            case ESTABLISHED:                                                       // the client is listening to some songs
             {
                 break;
             }
-            case DOWNLOADING:
+            case DOWNLOADING:                                                       // the client is uploading a song to us
             {
                 break;
             }
@@ -397,5 +403,3 @@ void* control_user(void* client_index)
     }
 
 }
-
-

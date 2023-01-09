@@ -30,13 +30,14 @@ int state = OFFLINE;
 fd_set fdset;
 int tcp_client_socket;
 int udp_client_socket;
+pthread_t datathread;
 char buffer[BUFFER_SIZE];
 uint16_t numstations;
-uint32_t multicastgroup;
+uint32_t multicastip;
 uint16_t portnumber;
 int currstation;
 //--------------------------Functions declarations--------------------------------------------------
-void Disconnect();
+void quit();
 int Connect_to_server(const char* server_ip, int server_port);
 int Wait_welcome();
 
@@ -44,39 +45,88 @@ int main(int argc,char* argv[]){
     //variables
     int server_port = atoi(argv[2]);
     char* server_ip = argv[1];
-    pthread_t datathread;
     tcp_client_socket = socket(AF_INET,SOCK_STREAM,0);
     udp_client_socket=socket(AF_INET,SOCK_DGRAM,0);
-    if(tcp_client_socket<0){
+    if(tcp_client_socket<0)
+    {
         perror("Failed creating socket\n");
     }
-    switch (state) {
-        case OFFLINE:{
-            Connect_to_server(server_ip, server_port);//connect
-            break;
-        }
-        case LISTENING:{
+    while(1)
+    {
+        int select_res=select(FD_SETSIZE,&fdset,NULL,NULL,NULL);
+        if(select_res>0)
+        {
+            if(FD_ISSET(STDIN_FILENO,&fdset)) //server pressed a KEY
+            {
+                char buff[BUFFER_SIZE];
+                printf("buffer in select:%s.\n");            //printf the buffer
+                fgets(buff,sizeof(buff),stdin);
+                if(buff[0]=='q'||buff[0]=='Q')                      //client pressed Q and wants to exit
+                {
+                    printf("Quitting the program.\n");
+                    quit();
+                }
+                else
+                {
 
-            break;
+                }
+                FD_SET(STDIN_FILENO,&fdset);                        //add the STDIN back into FDSET so we can read it again next iter
+
+
+            }
         }
-        case WAIT_WELCOME:{
-            Wait_welcome();
-            break;
-        }
-        case WAIT_SONG:{
-            break;
-        }
-        case WAIT_APPROVAL:{
-            break;
-        }
-        case UPLOADING:{
-            break;
+
+
+        switch (state)
+        {
+            case OFFLINE:
+            {
+                Connect_to_server(server_ip, server_port);//connect
+                state = WAIT_WELCOME;
+                break;
+            }
+            case LISTENING:
+            {
+
+                break;
+            }
+            case WAIT_WELCOME:
+            {
+                Wait_welcome();
+                break;
+            }
+            case WAIT_SONG:
+            {
+                break;
+            }
+            case WAIT_APPROVAL:
+            {
+                break;
+            }
+            case UPLOADING:
+            {
+                break;
+            }
         }
     }
-    return 0;
+
+}
+void quit(int reason)                    // reason is EXIT-FAILURE or EXIT SUCCESS
+{
+    close(tcp_client_socket);
+    pthread_cancel(datathread);
+    struct ip_mreq mreq;
+    mreq.imr_interface.s_addr= htonl(INADDR_ANY);
+    mreq.imr_multiaddr.s_addr=multicastip;
+    setsockopt(udp_client_socket,IPPROTO_IP,IP_DROP_MEMBERSHIP,&mreq,sizeof(mreq));         // leave the multicast group
+    close(udp_client_socket);
+    exit(reason);
+
+
 }
 
-int Connect_to_server(const char* server_ip, int server_port){
+int Connect_to_server(const char* server_ip, int server_port)
+{
     //creating struct
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
@@ -108,8 +158,8 @@ int Wait_welcome()
     FD_SET(tcp_client_socket,&fdset);
     tv.tv_sec=0;
     tv.tv_usec=300*1000; // 300 MS timeout for select
-    int select_res=select(tcp_client_socket + 1, NULL, &fdset, NULL, &tv);
-    if (select_res == 1)
+    int select_res=select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
+    if (select_res > 0)
     {
         uint8_t welcomebuffer[9];
         //success- we received a welcome message
@@ -127,7 +177,7 @@ int Wait_welcome()
 
                 }
                 numstations=buffer[1];
-                multicastgroup=buffer[3];
+                multicastip=buffer[3];
                 portnumber=buffer[7];
                 state=LISTENING;
                 currstation=0;
@@ -143,6 +193,13 @@ int Wait_welcome()
     }
     else if (select_res==0)
     {
-        //TIMEOUT OCCURED
+        printf("Timeout on wait welcone.\n");
+        quit(EXIT_FAILURE);
     }
+    else if (select_res==-1)
+    {
+        printf("ERROR IN SELECT");
+        quit(EXIT_FAILURE);
+    }
+
 }
