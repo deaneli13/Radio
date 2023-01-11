@@ -18,10 +18,10 @@
 #define OFFLINE     0
 #define LISTENING   1
 #define WAIT_WELCOME   2
-#define WAIT_SONG   3
+#define WAIT_SONGINFO   3
 #define WAIT_APPROVAL   4
 #define UPLOADING   5
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 1024
 
 
 
@@ -57,11 +57,12 @@ void Quit_Program();                                             //quit the prog
 int Connect_to_server(const char* server_ip, int server_port);
 int Wait_welcome();
 int Send_hello();
-void* Listen_song(void* no_args);                               // this function listens to a song, the udp thread will run it
+void* Listen_data(void* no_args);                               // this function listens to a song, the udp thread will run it
 void* Change_station(void*);                                    //this function removes the client from his multicast group and joins another multicast group
 int Leave_Station();                                            //leave the current station[thread func] as a signal,then rerun Change_station
 int Connect_station();
 int Stdin_handler();
+int Listen_control();
 struct in_addr increaseip(struct in_addr initialaddress,int increment);       //increase the ip of an ip address by
 
 
@@ -114,6 +115,7 @@ int main(int argc,char* argv[])
             }
             case LISTENING:
             {
+                Listen_control();
 
                 break;
             }
@@ -122,7 +124,7 @@ int main(int argc,char* argv[])
                 Wait_welcome();
                 break;
             }
-            case WAIT_SONG:
+            case WAIT_SONGINFO:
             {
 
                 break;
@@ -148,16 +150,25 @@ void* Listen_song(void* no_args)
     addr.sin_addr.s_addr=htonl(INADDR_ANY);
     bind(udp_client_socket,(struct sockaddr*)&addr,sizeof(addr));
     mreq.imr_interface.s_addr= htonl(INADDR_ANY);
-    mreq.imr_multiaddr.s_addr= increaseip(initialmulticast,currstation<<24).s_addr;
+    mreq.imr_multiaddr.s_addr= increaseip(initialmulticast,currstation).s_addr;
+    struct sockaddr_in multicast_addr;
+    multicast_addr.sin_family=AF_INET;
+    multicast_addr.sin_port=htons(udp_portnumber);
+   // multicast_addr.sin_addr.s_addr=increaseip(initialmulticast,currstation<<24).s_addr;
+    multicast_addr.sin_addr.s_addr=initialmulticast.s_addr;
     setsockopt(udp_client_socket,IPPROTO_IP,IP_ADD_MEMBERSHIP,&mreq,sizeof(mreq));
     FILE* fp;
-    fp= popen("play -t mp3 ->/dev/->/null 2 >&1","w");          //open a command that plays mp3
+    fp= popen("play -t mp3 -> /dev/null 2>&1","w");          //open a command that plays mp3
+    int rec_size;
+    size_t addrlen=sizeof(addr);
+    int multicastaddrlen=sizeof(multicast_addr);
     while(1)
     {
-        printf("in while 1 in play.\n");
-        int addrlen=sizeof(addr);
-        recvfrom(udp_client_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,(socklen_t *)addrlen);
-        fwrite(data_buffer,sizeof(uint8_t),sizeof(data_buffer),fp);
+        memset(data_buffer,'\0',sizeof(data_buffer));
+        rec_size=recvfrom(udp_client_socket,data_buffer,BUFFER_SIZE,0,(struct sockaddr*)&multicast_addr,&addrlen);
+        //printf("Recsise is: %d\n",rec_size);
+        rec_size=fwrite(data_buffer,1,rec_size,fp);
+        //printf("Recsise write is: %d\n",rec_size);
 
     }
 }
@@ -174,7 +185,27 @@ void Quit_Program(int reason)                    // reason is EXIT-FAILURE or EX
 
 
 }
+int Listen_control()
+{
+    FD_SET(STDIN_FILENO,&fdset);
+    FD_SET(tcp_client_socket,&fdset);
+    int selectres=select(FD_SETSIZE,&fdset,NULL,NULL,NULL);
+    if(selectres<0)
+    {
+        perror("Failed to select on Listen Control.\n");
+    }
+    else                                                    //there is a change in one of the fds(STDIN or TCP)
+    {
+        if(FD_ISSET(STDIN_FILENO,&fdset))                    // the change was in stdin
+        {
+            Stdin_handler();
+        }
+        else                                                //there is TCP input
+        {
 
+        }
+    }
+}
 int Connect_to_server(const char* server_ip, int server_port)
 {
     //creating struct
@@ -256,10 +287,10 @@ int Wait_welcome()
             //memset(control_buffer,'\0',BUFFER_SIZE);
             struct in_addr temp;
             temp.s_addr=multicastip;
-            printf("There are %d stations, the ip of the first station is: %s and the udp port is:%d.\n",(int)numstations,inet_ntoa(temp),(int)udp_portnumber);
+            printf("There are %d stations\n the ip of the first station is: %s \n the udp port is:%d.\n",(int)numstations,inet_ntoa(temp),(int)udp_portnumber);
             state=LISTENING;
             currstation=0;
-            pthread_create(&datathread,NULL,Listen_song,NULL);
+            pthread_create(&datathread,NULL,Listen_data,NULL);
 
         }
         else
@@ -289,20 +320,51 @@ struct in_addr increaseip(struct in_addr initialaddress,int increment)
 
 }
 
-int Stdin_handler()
+int Stdin_handler()                                     //assume the change was in STDIN andw e need to either change station or quit
 {
-    char buff[BUFFER_SIZE];
+    char buff[100];
     printf("buffer in select:%s.\n");            //printf the buffer
     fgets(buff,sizeof(buff),stdin);
-    if(buff[0]=='q'||buff[0]=='Q')                      //client pressed Q and wants to exit
+    //fseek(stdin,0,SEEK_END);
+    fflush(stdin);
+    if((buff[0]=='q'||buff[0]=='Q') &&strlen(buff)==1)                      //client pressed Q and wants to exit
     {
         printf("Quitting the program.\n");
         Quit_Program(EXIT_SUCCESS);
     }
-    else
+    else if((buff[0]=='s'||buff[0]=='S') &&strlen(buff)==1)                      //client pressed Q and wants to exit
     {
-        //user either pressed a number of a station or he pressed a wrong key
+        printf("Insert song name.\n");
+        //"UPLOAD SONG"
+    }
+    else                                                                        //client pressed neither S nor Q
+    {
+        int alldigits=1;
+        int inputnum;
+        for(int i=0;i<strlen(buff);i++)
+        {
+            if(buff[i]>'9'||buff[i]<'0')
+            {
+                alldigits = 0;
+                break;
+            }
+        }
+        inputnum=atoi(buff);
+        if (alldigits==1 &&inputnum<numstations)                            //user can change the station to whatever he picked
+        {
+            Change_station(NULL);
+            nextstation=inputnum;
+            state=WAIT_SONGINFO;
+            //user either pressed a number of a station or he pressed a wrong key
+        }
+        else
+        {
+            printf("The command is invalid.Please try again.\n");
+        }
 
     }
+
+
+
 
 }
