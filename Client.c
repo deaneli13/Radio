@@ -1,5 +1,9 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 //-----------------------------Includes--------------------------------------------
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
@@ -9,6 +13,7 @@
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <errno.h>
 //--------------------------------Defines-------------------------------------------
 #define OFFLINE     0
 #define LISTENING   1
@@ -25,6 +30,9 @@
 #define PERMIT_REPLY 2
 #define INVALID_REPLY 3
 #define NEWSTATIONS_REPLY 4
+#define HELLO_TYPE 0
+#define ASK_SONG_TYPE 1
+#define UPSONG_TYPE 2
 //-------------------------Global Variables------------------------------------
 int state = OFFLINE;
 fd_set fdset;
@@ -39,8 +47,6 @@ uint32_t multicastip;
 uint16_t udp_portnumber;                                            //the udp port which we connect to
 int currstation;
 int nextstation=0;                                               //nextstation is updated every time we call asksong, then we signal the data thread to change station
-struct ip_mreq mreq;
-struct in_addr a;
 int change_flag = 0;                                            //flag that rises when we want to change song
 
 
@@ -50,17 +56,46 @@ int change_flag = 0;                                            //flag that rise
 void Quit_Program();                                             //quit the program entirely
 int Connect_to_server(const char* server_ip, int server_port);
 int Wait_welcome();
+int Send_hello();
 void* Listen_song(void* no_args);                               // this function listens to a song, the udp thread will run it
 void* Change_station(void*);                                    //this function removes the client from his multicast group and joins another multicast group
 int Leave_Station();                                            //leave the current station[thread func] as a signal,then rerun Change_station
 int Connect_station();
+int Stdin_handler();
 struct in_addr increaseip(struct in_addr initialaddress,int increment);       //increase the ip of an ip address by
 
+
+
+uint32_t pack_uint8_t_to_uint32_t(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
+{
+    return (uint32_t)a << 24 | (uint32_t)b << 16 | (uint32_t)c << 8 | (uint32_t)d;
+}
+
+void unpack_uint32_t_to_uint8_t(uint32_t in, uint8_t out[4])
+{
+    out[0] = (in >> 24) & 0xff;
+    out[1] = (in >> 16) & 0xff;
+    out[2] = (in >> 8) & 0xff;
+    out[3] = in & 0xff;
+}
+
+uint16_t pack_uint8_t_to_uint16_t(uint8_t a, uint8_t b)
+{
+    return  (uint16_t)a << 8 | (uint16_t)b;
+}
+
+void unpack_uint16_t_to_uint8_t(uint16_t in, uint8_t out[2])
+{
+    out[0] = (in >> 8) & 0xff;
+    out[1] = in & 0xff;
+}
 int main(int argc,char* argv[])
 {
     //variables
     int server_port = atoi(argv[2]);
     char* server_ip = argv[1];
+    printf("argv1:%s\n",argv[1]);
+    printf("argv2:%s\n",argv[2]);
     tcp_client_socket = socket(AF_INET,SOCK_STREAM,0);
     udp_client_socket=socket(AF_INET,SOCK_DGRAM,0);
     if(tcp_client_socket<0)
@@ -69,30 +104,6 @@ int main(int argc,char* argv[])
     }
     while(1)
     {
-        int select_res=select(FD_SETSIZE,&fdset,NULL,NULL,NULL);
-        if(select_res>0)
-        {
-            if(FD_ISSET(STDIN_FILENO,&fdset)) //server pressed a KEY
-            {
-                char buff[BUFFER_SIZE];
-                printf("buffer in select:%s.\n");            //printf the buffer
-                fgets(buff,sizeof(buff),stdin);
-                if(buff[0]=='q'||buff[0]=='Q')                      //client pressed Q and wants to exit
-                {
-                    printf("Quitting the program.\n");
-                    Quit_Program(EXIT_SUCCESS);
-                }
-                else
-                {
-
-                }
-                FD_SET(STDIN_FILENO,&fdset);                        //add the STDIN back into FDSET so we can read it again next iter
-
-
-            }
-        }
-
-
         switch (state)
         {
             case OFFLINE:
@@ -131,17 +142,19 @@ int main(int argc,char* argv[])
 void* Listen_song(void* no_args)
 {
     struct sockaddr_in addr;
+    struct ip_mreq mreq;
     addr.sin_family=AF_INET;
     addr.sin_port=htons(udp_portnumber);
     addr.sin_addr.s_addr=htonl(INADDR_ANY);
     bind(udp_client_socket,(struct sockaddr*)&addr,sizeof(addr));
     mreq.imr_interface.s_addr= htonl(INADDR_ANY);
-    mreq.imr_multiaddr.s_addr= increaseip(initialmulticast,currstation).s_addr;
+    mreq.imr_multiaddr.s_addr= increaseip(initialmulticast,currstation<<24).s_addr;
     setsockopt(udp_client_socket,IPPROTO_IP,IP_ADD_MEMBERSHIP,&mreq,sizeof(mreq));
     FILE* fp;
-    fp= popen("play -t mp3 ->/dev ->/null 2 >&1","w");          //open a command that plays mp3
+    fp= popen("play -t mp3 ->/dev/->/null 2 >&1","w");          //open a command that plays mp3
     while(1)
     {
+        printf("in while 1 in play.\n");
         int addrlen=sizeof(addr);
         recvfrom(udp_client_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,(socklen_t *)addrlen);
         fwrite(data_buffer,sizeof(uint8_t),sizeof(data_buffer),fp);
@@ -150,6 +163,7 @@ void* Listen_song(void* no_args)
 }
 void Quit_Program(int reason)                    // reason is EXIT-FAILURE or EXIT-SUCCESS
 {
+    struct ip_mreq mreq;
     close(tcp_client_socket);
     pthread_cancel(datathread);
     mreq.imr_interface.s_addr= htonl(INADDR_ANY);
@@ -185,34 +199,61 @@ int Connect_to_server(const char* server_ip, int server_port)
     }
 }
 
+int Send_hello()
+{
+    uint8_t buffer[3];
+    buffer[0] = HELLO_TYPE;
+    buffer[1] = 0;
+    buffer[2] = 0;
+    int sendres = send(tcp_client_socket,buffer,3*sizeof(uint8_t),0);
+    return sendres;
+}
 int Wait_welcome()
 {
+    int hellores = Send_hello();
+    if(hellores<0){
+        perror("Failed to send Hello message\n");
+        state = OFFLINE;
+        return -1;
+    }
     struct timeval tv;
     FD_ZERO(&fdset);
     FD_SET(tcp_client_socket,&fdset);
     tv.tv_sec=0;
     tv.tv_usec=300*1000; // 300 MS timeout for select
     int select_res=select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
+    printf("Select res in wait welcome: %d\n",select_res);
+
     if (select_res > 0)
     {
-        uint8_t welcomebuffer[9];
-        //success- we received a welcome message
-        int recvres=recv(tcp_client_socket,welcomebuffer,9,0);
+//        if(FD_ISSET(STDIN_FILENO,&fdset))                       //client pressed a KEY
+//        {
+//            Stdin_handler();
+//        }
+
+        {
+
+        }
+        //success- we received a message
+        int recvres=recv(tcp_client_socket,control_buffer,9,0);
         if(recvres!= -1)
         {
             // success
 
             printf("We received 9 bytes of welcome message");
-            if(welcomebuffer[0]!=WELCOME_REPLY)
+            if(control_buffer[0]!=WELCOME_REPLY)
             {
                 printf("the reply is not of type WELCOME.\n");
                 Quit_Program(EXIT_FAILURE);                         //quit the program
 
             }
-            numstations=welcomebuffer[1];
-            multicastip=welcomebuffer[3];
+            for(int i=0;i<9;i++)
+                printf("WELCOME=%d\n",control_buffer[i]);
+            numstations= pack_uint8_t_to_uint16_t(control_buffer[1],control_buffer[2]);
+            multicastip=pack_uint8_t_to_uint32_t(control_buffer[3],control_buffer[4],control_buffer[5],control_buffer[6]);
             initialmulticast.s_addr=multicastip;
-            udp_portnumber=welcomebuffer[7];
+            udp_portnumber=pack_uint8_t_to_uint16_t(control_buffer[7],control_buffer[8]);
+            //memset(control_buffer,'\0',BUFFER_SIZE);
             struct in_addr temp;
             temp.s_addr=multicastip;
             printf("There are %d stations, the ip of the first station is: %s and the udp port is:%d.\n",(int)numstations,inet_ntoa(temp),(int)udp_portnumber);
@@ -220,12 +261,10 @@ int Wait_welcome()
             currstation=0;
             pthread_create(&datathread,NULL,Listen_song,NULL);
 
-
         }
         else
         {
             perror("Failed to receive welcome message.\n");
-
         }
 
     }
@@ -241,10 +280,29 @@ int Wait_welcome()
     }
 }
 
+
 struct in_addr increaseip(struct in_addr initialaddress,int increment)
 {
     struct in_addr newaddr;
     newaddr.s_addr  = htonl(ntohl(initialaddress.s_addr) + increment);
     return newaddr;
+
+}
+
+int Stdin_handler()
+{
+    char buff[BUFFER_SIZE];
+    printf("buffer in select:%s.\n");            //printf the buffer
+    fgets(buff,sizeof(buff),stdin);
+    if(buff[0]=='q'||buff[0]=='Q')                      //client pressed Q and wants to exit
+    {
+        printf("Quitting the program.\n");
+        Quit_Program(EXIT_SUCCESS);
+    }
+    else
+    {
+        //user either pressed a number of a station or he pressed a wrong key
+
+    }
 
 }
