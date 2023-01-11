@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 //-----------------------------Includes--------------------------------------------
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +12,8 @@
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/time.h>
+
+
 //--------------------------------Defines-------------------------------------------
 #define OFFLINE     0
 #define LISTENING   1
@@ -17,7 +22,7 @@
 #define WAIT_APPROVAL   4
 #define UPLOADING   5
 #define BUFFER_SIZE 256
-#define BUFFER_SIZE 256
+
 
 
 #define WELCOME_REPLY 0
@@ -59,8 +64,8 @@ int main(int argc,char* argv[]){
             if(FD_ISSET(STDIN_FILENO,&fdset)) //server pressed a KEY
             {
                 char buff[BUFFER_SIZE];
-                printf("buffer in select:%s.\n");            //printf the buffer
                 fgets(buff,sizeof(buff),stdin);
+                printf("buffer in select: %s .\n",buff);            //printf the buffer
                 if(buff[0]=='q'||buff[0]=='Q')                      //client pressed Q and wants to exit
                 {
                     printf("Quitting the program.\n");
@@ -193,7 +198,7 @@ int Wait_welcome()
     }
     else if (select_res==0)
     {
-        printf("Timeout on wait welcone.\n");
+        printf("Timeout on wait welcome.\n");
         quit(EXIT_FAILURE);
     }
     else if (select_res==-1)
