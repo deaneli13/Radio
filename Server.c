@@ -10,6 +10,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include "errno.h"
+#include "libgen.h"
 //--------------------------------Defines-------------------------------------------
 #define OFFLINE     0
 #define ESTABLISHED   1
@@ -28,66 +29,76 @@
 
 typedef struct Station
 {
-    char* Filepath;                                  //path to the song on the pc
-    char* Multicast_Ip;                              //multicast ip for the
+    FILE* fp;
+    char* filename;                                     //path to the song on the pc
+    uint32_t multicastip;                                 //multicast ip for the
 } Station;
 typedef struct Client
 {
-    pthread_t client_thread;                         //path to the song on the pc
+    pthread_t client_thread;                                     //path to the song on the pc
     int client_sock;                                 //multicast ip for the
 } Client;
 //-------------------------Global Variables------------------------------------
 Client clients[MAX_CLIENTS]={0};                    // 100 control thread for max of 100 clients
+uint8_t data_buffer[BUFFER_SIZE];
 int tcp_welcome_socket;                             //the tcp welcome socket which we will connect new clients with
 int udp_server_socket;                              //the udp client socket, which we use to stream songs
 uint16_t num_stations;
 int num_clients=0;                                  //num of current clients connected to the radio
 uint32_t multicastGroup;                            //holds the ip of the initial multicast group in 4 bytes
-int server_tcp_port;
-int server_udp_port;
+int tcp_server_port;
+int udp_server_port;
 
 //--------------------------Functions declarations--------------------------------------------------
 void* stream_song(void* Station);
 struct in_addr increaseip(struct in_addr initialmulticast,int increment);
 void free_resources(Station* Stations,pthread_t* data_threads);
 void* control_user(void* client_index);
-int timeout_client(int client_index);
-int send_invalid(int client_index,char* reply_string,uint8_t reply_string_len);
+int timeout_client(int client_index,const char* replystr);
+int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len);
 int send_welcome(int client_index);                                         // sends a welcome message to the client that just connected
 int send_announce(int client_index,char* song_name,uint8_t song_name_len);  // sends the client the song name at the station he asked for
 int send_permitsong(int client_index,uint8_t permission);                   // sends the client 1 or 0 if he can upload his song currently or not
 int send_newstations();                                                     // sends to everyone a message about the new station in the radio,done after uplod
-int main(int argc,char* argv[]){
+int main(int argc,char* argv[])
+{
     num_stations=argc-2;
-    server_tcp_port=atoi(argv[1]);
+    tcp_server_port=atoi(argv[1]);
     char* initial_multicastip=argv[2];
     multicastGroup=(uint32_t)inet_addr(initial_multicastip);               // changes the multicast group from a string to uint32 t
     fd_set fdset;
-    server_udp_port=atoi(argv[3]);
-
+    udp_server_port=atoi(argv[3]);
     Station* Stations=(Station*)malloc(sizeof(Station)*num_stations);
     pthread_t* data_threads=(pthread_t*)malloc(sizeof(pthread_t)*num_stations);
     for(int i=0;i<num_stations;i++)
     {
-        Stations[i].Filepath=argv[i+4];
+        Stations[i].fp=fopen(argv[i+4],"r");
+        Stations[i].filename=basename(argv[i+4]);
         struct in_addr newaddr;
         newaddr.s_addr=inet_addr(initial_multicastip);
         newaddr=increaseip(newaddr,i);
-        Stations[i].Multicast_Ip=inet_ntoa(newaddr); // need to check how to make new address same address+1
+        Stations[i].multicastip=newaddr.s_addr;
     }
 
     struct sockaddr_in server;
     server.sin_family=AF_INET;
-    server.sin_port=htons(server_tcp_port);
+    server.sin_port=htons(tcp_server_port);
     server.sin_addr.s_addr=htonl(INADDR_ANY);
     memset(server.sin_zero,'\0',sizeof server.sin_zero);
     struct sockaddr_in client;
     fd_set readfdset;
 
-
-
     printf("Creating welcome socket.\n");
     tcp_welcome_socket = socket(AF_INET,SOCK_STREAM,0);
+    udp_server_socket=socket(AF_INET,SOCK_DGRAM,0);
+    if(tcp_welcome_socket==-1)
+    {
+        perror("Failed to open tcp server socket.\n");
+    }
+    if(udp_server_socket==-1)
+    {
+        perror("Failed to open udp server socket.\n");
+    }
     if(tcp_welcome_socket<0)
     {
         perror("Failed creating socket\n");
@@ -166,8 +177,12 @@ int main(int argc,char* argv[]){
 
 
         }
+        if(num_clients<MAX_CLIENTS)
+        {
+            FD_SET(tcp_welcome_socket,&readfdset);                                      //insert the welcome socket into the FD set again,only if we have room
+        }
         FD_SET(STDIN_FILENO,&readfdset);                                                //insert STDIN into the FD set again
-        FD_SET(tcp_welcome_socket,&readfdset);                                          //insert the welcome socket into the FD set again
+
     }
     return 0;
 }
@@ -178,6 +193,7 @@ struct in_addr increaseip(struct in_addr initialmulticast,int increment)
     return newaddr;
 
 }
+
 void free_resources(Station* Stations,pthread_t* data_threads)
 {
     /*
@@ -202,20 +218,36 @@ void free_resources(Station* Stations,pthread_t* data_threads)
 }
 void* stream_song(void* Station_Pointer)
 {
+    Station* stations=(Station*)Station_Pointer;
     /*
-     * this function streams a song at station i to all the clients that are listening to that station
-     * it sends the station to the multicast address of the station by chunks
+     * stream songs to all stations, one chunk at a time
      */
-    Station* ourstation;
-    ourstation=(Station*)Station_Pointer;
-    char* filepath=ourstation->Filepath;
-    char* dest_multicastip=ourstation->Multicast_Ip;
+    struct sockaddr_in addr;
+    addr.sin_family=AF_INET;
+    addr.sin_port=htons(udp_server_port);
+
+    while(1)
+    {
+
+
+
+        for(int i=0;i<num_stations;i++)
+        {
+            addr.sin_addr.s_addr=stations[i].multicastip;
+            fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),stations[i].fp);
+            sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
+        }
+    }
+
 
 }
-int timeout_client(int client_index)                                //when we need to timeout a client, what to do
+int timeout_client(int client_index,const char* replystr)                                //when we need to timeout a client, what to do
 {
+    send_invalid(client_index,replystr,strlen(replystr));
+    close(clients[client_index].client_sock);
     clients[client_index].client_sock=0;
     pthread_cancel(clients[client_index].client_thread);
+    clients[client_index].client_thread=0;
     num_clients--;
 
 }
@@ -230,7 +262,7 @@ int send_welcome(int client_index)
     welcomebuffer[0]=WELCOME_REPLY;
     welcomebuffer[1]=num_stations;
     welcomebuffer[3]=multicastGroup;
-    welcomebuffer[7]=server_udp_port;
+    welcomebuffer[7]=udp_server_port;
 
     int bytes_sent=send(clients[client_index].client_sock,welcomebuffer,sizeof(welcomebuffer),0);
     if (bytes_sent < 0)
@@ -294,7 +326,7 @@ int send_permitsong(int client_index,uint8_t permission)
     free(permitbuffer);
     return bytes_sent;
 }
-int send_invalid(int client_index,char* reply_string,uint8_t reply_string_len)
+int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len)
 {
     // sends an error message of invalid command to client who typed something stupid
     uint8_t * invalidbuffer=(uint8_t*)malloc(sizeof(uint8_t)*(strlen(reply_string)+2));
@@ -364,31 +396,31 @@ void* control_user(void* client_index)
     {
         switch(state)
         {
-            case OFFLINE:
+            case OFFLINE:                                                       // the client has just connected for the first time
             {
                 if(freshconnection==1)                                          // the connection is new-only first time
                 {
                     // we will send a welcome message
                     freshconnection=0;
                     send_welcome(index);
-
+                    state=ESTABLISHED;                                          //there is a connection and the client listens to music
 
                 }
                 else
                 {
-                    //freeresources;
+                    timeout_client(index,"Client has tried to reconnect after disconnecting.\n");                               //free the client's resources(sock and thread)
                 }
                 break;
             }
-            case CHANGE_STATION:
+            case CHANGE_STATION:                                                    //the client asked to switch a station
             {
                 break;
             }
-            case ESTABLISHED:
+            case ESTABLISHED:                                                       // the client is listening to some songs
             {
                 break;
             }
-            case DOWNLOADING:
+            case DOWNLOADING:                                                       // the client is uploading a song to us
             {
                 break;
             }
