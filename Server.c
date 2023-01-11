@@ -28,16 +28,16 @@
 
 typedef struct Station
 {
-    char* Filepath;                                     //path to the song on the pc
-    char* Multicast_Ip;                                 //multicast ip for the
+    char* Filepath;                                  //path to the song on the pc
+    char* Multicast_Ip;                              //multicast ip for the
 } Station;
 typedef struct Client
 {
-    pthread_t client_thread;                                     //path to the song on the pc
+    pthread_t client_thread;                         //path to the song on the pc
     int client_sock;                                 //multicast ip for the
 } Client;
 //-------------------------Global Variables------------------------------------
-Client clients[MAX_CLIENTS]={0};                            // 100 control thread for max of 100 clients
+Client clients[MAX_CLIENTS]={0};                    // 100 control thread for max of 100 clients
 int tcp_welcome_socket;                             //the tcp welcome socket which we will connect new clients with
 int udp_server_socket;                              //the udp client socket, which we use to stream songs
 uint16_t num_stations;
@@ -214,7 +214,7 @@ void* stream_song(void* Station_Pointer)
 }
 int timeout_client(int client_index)                                //when we need to timeout a client, what to do
 {
-    clients[client_index].client_sock=-1;
+    clients[client_index].client_sock=0;
     pthread_cancel(clients[client_index].client_thread);
     num_clients--;
 
@@ -368,7 +368,7 @@ void* control_user(void* client_index)
             {
                 if(freshconnection==1)                                          // the connection is new-only first time
                 {
-                                                                                // we will send a welcome message
+                    // we will send a welcome message
                     freshconnection=0;
                     send_welcome(index);
 
@@ -397,5 +397,3 @@ void* control_user(void* client_index)
     }
 
 }
-
-

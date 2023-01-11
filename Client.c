@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <errno.h>
 //--------------------------------Defines-------------------------------------------
 #define OFFLINE     0
 #define LISTENING   1
@@ -16,7 +17,6 @@
 #define WAIT_SONG   3
 #define WAIT_APPROVAL   4
 #define UPLOADING   5
-#define BUFFER_SIZE 256
 #define BUFFER_SIZE 256
 
 
