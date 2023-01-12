@@ -212,17 +212,14 @@ int Listen_control()
     }
     else                                                    //there is a change in one of the fds(STDIN or TCP)
     {
-        perror("23456789\n");
         if(FD_ISSET(STDIN_FILENO,&fdset))                    // the change was in stdin
         {
-            perror("dean ha gever\n");
             Stdin_handler();
         }
         else                                                //there is TCP input
         {
              uint8_t message_type;
              int count=0;
-             perror("nigga2222");
              while((count=recv(tcp_client_socket,&message_type,1,MSG_DONTWAIT))>0)
              {
                  switch(message_type)
@@ -319,8 +316,6 @@ int Wait_welcome()
                 Quit_Program(EXIT_FAILURE);                         //quit the program
 
             }
-
-            perror("popop\n");
             numstations= pack_uint8_t_to_uint16_t(control_buffer[1],control_buffer[2]);
             multicastip=pack_uint8_t_to_uint32_t(control_buffer[3],control_buffer[4],control_buffer[5],control_buffer[6]);
             initialmulticast.s_addr=multicastip;
@@ -331,11 +326,9 @@ int Wait_welcome()
             printf("There are %d stations\n the ip of the first station is: %s \n the udp port is:%d.\n",(int)numstations,inet_ntoa(temp),(int)udp_portnumber);
             state=LISTENING;
             uint8_t message_type[1];
-            perror("nigga");
             int count=0;
             while((count=recv(tcp_client_socket,message_type,1,MSG_DONTWAIT))>0)
             {
-                perror("qqqq");
                 switch(message_type[0])
                 {
                     case NEWSTATIONS_REPLY:
@@ -362,10 +355,6 @@ int Wait_welcome()
                         break;
                     }
                 }
-            }
-            if (count == -1)
-            {
-                perror("recvbbb");
             }
             currstation=0;
             pthread_create(&datathread,NULL,Listen_data,NULL);
@@ -481,8 +470,6 @@ int Stdin_handler()                                     //assume the change was 
     fgets(buff,99,stdin);
     if (strlen(buff)>0)
         buff[strlen(buff)-1]=0;
-    perror("danny ha gever\n");
-    printf("buffer in stdinhandler:%s\n",buff);            //printf the buffer
     fseek(stdin,0,SEEK_END);
     fflush(stdin);
     for(int i=0;i<20;i++)
@@ -550,7 +537,7 @@ int Invalid_handler(int len)               // read the control buffer and assume
 }
 int Announce_handler(int len)               // read the control buffer and assume its an invalid command, read it and print it
 {
-    //perror("The song name in station %d : ",nextstation);
+    printf("The song name in station %d : ",nextstation);
     for(uint8_t i=0;i<len;i++)
     {
         putchar(control_buffer[i]);
