@@ -53,13 +53,15 @@ int num_clients=0;                                  //num of current clients con
 uint32_t multicastGroup;                            //holds the ip of the initial multicast group in 4 bytes
 int tcp_server_port;
 int udp_server_port;
+pthread_t data_thread;
 
 //--------------------------Functions declarations--------------------------------------------------
-void* stream_song(void* Station);
+void* stream_song(void* Stations);
 struct in_addr increaseip(struct in_addr initialmulticast,int increment);
-void free_resources(Station* Stations,pthread_t* data_threads);
+void free_resources(Station* Station);
 void* control_user(void* client_index);
 int timeout_client(int client_index,const char* replystr);
+int Stdin_handler();
 int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len);
 int send_welcome(int client_index);                                         // sends a welcome message to the client that just connected
 int send_announce(int client_index,char* song_name,uint8_t song_name_len);  // sends the client the song name at the station he asked for
@@ -103,9 +105,9 @@ int main(int argc,char* argv[])
     printf("Argv 1: %s\n",argv[1]);
     printf("Argv 2: %s\n",argv[2]);
     printf("Argv 3: %s\n",argv[3]);
-    printf("Argv 4: %s\n",argv[3]);
+    printf("Argv 4: %s\n",argv[4]);
     Station* Stations=(Station*)malloc(sizeof(Station)*num_stations);
-    pthread_t* data_threads=(pthread_t*)malloc(sizeof(pthread_t)*num_stations);
+
     for(int i=0;i<num_stations;i++)
     {
         Stations[i].fp=fopen(argv[i+4],"r");
@@ -113,13 +115,15 @@ int main(int argc,char* argv[])
         {
             printf("Cannot open file.\n");
         }
-        Stations[i].filename=basename(argv[i+4]);
+
+        Stations[i].filename=(char*)malloc(sizeof(char)*strlen(argv[i+4]));
+        strcpy(Stations[i].filename,argv[i+4]);
         struct in_addr newaddr;
         newaddr.s_addr=inet_addr(initial_multicastip);
         newaddr=increaseip(newaddr,i);
         Stations[i].multicastip=newaddr.s_addr;
     }
-
+    pthread_create(&data_thread,NULL,stream_song,Stations);
     struct sockaddr_in server;
     server.sin_family=AF_INET;
     server.sin_port=htons(tcp_server_port);
@@ -139,10 +143,6 @@ int main(int argc,char* argv[])
     {
         perror("Failed to open udp server socket.\n");
     }
-    if(tcp_welcome_socket<0)
-    {
-        perror("Failed creating socket\n");
-    }
     FD_ZERO(&readfdset);
     FD_SET(tcp_welcome_socket,&readfdset);
     FD_SET(STDIN_FILENO,&readfdset);                //add the keyboard to the read fd set to check if server click Q
@@ -152,7 +152,7 @@ int main(int argc,char* argv[])
     if(bindres==-1)
     {
         perror("Failed to bind welcome socket.\n");
-        free_resources(Stations,data_threads);
+        free_resources(Stations);
         return -1;
     }
     printf("Starting to listen.\n");
@@ -160,24 +160,24 @@ int main(int argc,char* argv[])
     if(listenres==-1)
     {
         perror("Failed to listen to welcome socket.\n");
-        free_resources(Stations,data_threads);
+        free_resources(Stations);
         return -1;
     }
-    printf("Before While1\n");
+
     while(1)
     {
-        printf("Before select in while1\n");
+        //printf("Before select in while1\n");
         int activity=select(FD_SETSIZE,&readfdset,NULL,NULL,NULL);
         if(activity==-1)
         {
             perror("Select failed.\n");
-            free_resources(Stations,data_threads);
+            free_resources(Stations);
 
         }
         printf("After select,activity=%d\n",activity);
         if(activity>0)                                                  //there was a change in either STDIN or welcomesocket
         {
-            if(FD_ISSET(tcp_welcome_socket,&readfdset))
+            if(FD_ISSET(tcp_welcome_socket,&readfdset))                 //the change is in the welcoem socket
             {
                 printf("There is a new connection.\n");
                 int clientsize=sizeof(client);
@@ -204,15 +204,7 @@ int main(int argc,char* argv[])
             }
             if(FD_ISSET(STDIN_FILENO,&readfdset)) //server pressed a KEY
             {
-                char buff[1];
-                fgets(buff,sizeof(buff),stdin);
-                if(buff[0]=='q'||buff[0]=='Q')                                                              //server clicked Q
-                {
-                    free_resources(Stations,data_threads);
-                    printf("Quitting the server.\n");
-                    return 0;
-                }
-
+                Stdin_handler();
             }
 
 
@@ -233,7 +225,7 @@ struct in_addr increaseip(struct in_addr initialmulticast,int increment)
     return newaddr;
 
 }
-void free_resources(Station* Stations,pthread_t* data_threads)
+void free_resources(Station* Stations)
 {
     /*
     this function clears all the resources of the server, such as threads, sockets, and then exits the program.
@@ -244,15 +236,16 @@ void free_resources(Station* Stations,pthread_t* data_threads)
         pthread_cancel(clients[i].client_thread);
         close(clients[i].client_sock);
     }
-    for(int i=0;i<num_stations;i++)                         //cancel the data threads
+    perror("qweqeqweqw\n");
+    for(int i=0;i<num_stations;i++)
     {
-        pthread_cancel(data_threads[i]);
+        free(Stations[i].filename);
     }
+    perror("xcvxvcxvx");
     free(Stations);
-    free(data_threads);
     close(tcp_welcome_socket);
     close(udp_server_socket);
-
+    pthread_cancel(data_thread);
     exit(EXIT_SUCCESS);                                                 //added to deny infinite LOOP
 }
 void* stream_song(void* Station_Pointer)
@@ -270,7 +263,6 @@ void* stream_song(void* Station_Pointer)
 
         for(int i=0;i<num_stations;i++)
         {
-            printf("IN STREAMING STATION %d\n",i);
             addr.sin_addr.s_addr=stations[i].multicastip;
             fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),stations[i].fp);
             sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
@@ -289,15 +281,56 @@ int timeout_client(int client_index,const char* replystr)                       
     num_clients--;
 
 }
+int Stdin_handler(Station* stationsarr)                                     //assume the change was in STDIN andw e need to either change station or quit
+{
+    char buff[100]={0};
+    fgets(buff,99,stdin);
+    if (strlen(buff)>0)
+        buff[strlen(buff)-1]=0;
+    fseek(stdin,0,SEEK_END);
+    fflush(stdin);
+    int sockfd; // file descriptor of the socket
+    struct sockaddr_in addr; // to hold address information
+    socklen_t addrlen = sizeof(addr);
+
+        if((buff[0]=='q'||buff[0]=='Q') &&strlen(buff)==1)                      //server pressed Q and wants to exit
+        {
+            printf("Quitting the program.\n");
+            free_resources(stationsarr);
+        }
+        else if((buff[0]=='p'||buff[0]=='P') &&strlen(buff)==1)                      //server pressed P and wants to print all the clients
+        {
+            printf("The clients connected to the radio are:\n");
+            for(int i=0;i<MAX_CLIENTS;i++)
+            {
+                if(clients[i].client_sock!=0)
+                {
+                    int ret = getpeername(clients[i].client_sock, (struct sockaddr *) &addr, &addrlen);
+                    if (ret == 0)
+                    {
+                        char ip[INET_ADDRSTRLEN];
+                        inet_ntop(AF_INET, &(addr.sin_addr), ip, INET_ADDRSTRLEN);
+                        printf("The IP address of the client is: %s\n", ip);
+                    }
+
+                }
+            }
+            printf("There are %d stations.\n",num_stations);
+            for(int i=0;i<num_stations;i++)
+            {
+                printf("Station %d plays: %s\n",i,stationsarr[i].filename);
+            }
+        }
+        else        //client pressed neither P nor Q
+        {
+            printf("WRONG BUTTON IDIOT");
+        }
+
+}
 int send_welcome(int client_index)
 {
     // sends a welcome message to the client that just connected
-    uint8_t* welcomebuffer=(uint8_t*)malloc(sizeof(uint8_t)*9);
-    if(welcomebuffer==NULL)
-    {
-        perror("Failed to allocate memory for welcome message.\n");
-    }
-
+    uint8_t welcomebuffer[9];
     welcomebuffer[0]=WELCOME_REPLY;
     uint8_t temp1[2];
     unpack_uint16_t_to_uint8_t(num_stations,temp1);
@@ -321,7 +354,6 @@ int send_welcome(int client_index)
         perror("Failed to send on send_welcome.\n");
 
     }
-    free(welcomebuffer);
     printf("Bytes sent in sendwelcome: %d.\n",bytes_sent);
     return bytes_sent;
     // should return the number of bytes sent if res is successful, -1 if error.
@@ -441,7 +473,6 @@ void* control_user(void* client_index)
     int index=*((int*)client_index);                  //the index of our client in the Clients array
     int state =OFFLINE;
     int freshconnection=1;
-    int currstation;
 
     while(1)
     {
@@ -454,7 +485,7 @@ void* control_user(void* client_index)
                     // we will send a welcome message
                     freshconnection=0;
                     printf("SEND WELCOME.\n");
-                    send_welcome(index);
+                    send_welcome(index);                                //receive hello and send welcome message
                     state=ESTABLISHED;                                          //there is a connection and the client listens to music
 
                 }
@@ -470,6 +501,7 @@ void* control_user(void* client_index)
             }
             case ESTABLISHED:                                                       // the client is listening to some songs
             {
+                //Wait_establisted_input(index);
                 break;
             }
             case DOWNLOADING:                                                       // the client is uploading a song to us

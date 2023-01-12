@@ -472,7 +472,6 @@ int Stdin_handler()                                     //assume the change was 
         buff[strlen(buff)-1]=0;
     fseek(stdin,0,SEEK_END);
     fflush(stdin);
-    for(int i=0;i<20;i++)
 
     if((buff[0]=='q'||buff[0]=='Q') &&strlen(buff)==1)                      //client pressed Q and wants to exit
     {
