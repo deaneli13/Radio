@@ -469,7 +469,7 @@ int Stdin_handler()                                     //assume the change was 
     char buff[100]={0};
     fgets(buff,99,stdin);
     if (strlen(buff)>0)
-        buff[strlen(buff)-1]=0;
+        buff[strlen(buff)-1]='\0';
     fseek(stdin,0,SEEK_END);
     fflush(stdin);
 
@@ -508,14 +508,7 @@ int Stdin_handler()                                     //assume the change was 
             printf("The command is invalid.Please try again.\n");
         }
         FD_CLR(STDIN_FILENO,&fdset);
-//        for(int i=0;i<20;i++)
-//            if(buff[i]=='\n')
-//                buff[i]='\0';
     }
-
-
-
-
 }
 int Newstations_handler()               // read the control buffer and assume its a newstations announcement,print it and increase numstations
 {
