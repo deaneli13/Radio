@@ -107,16 +107,15 @@ int main(int argc,char* argv[])
     printf("Argv 3: %s\n",argv[3]);
     printf("Argv 4: %s\n",argv[4]);
     Station* Stations=(Station*)malloc(sizeof(Station)*num_stations);
-
     for(int i=0;i<num_stations;i++)
     {
         Stations[i].fp=fopen(argv[i+4],"r");
-        if(Stations[i].fp==NULL)
+        if(Stations[i].fp==NULL)            // checks if mp3 file opened successfully
         {
             printf("Cannot open file.\n");
         }
-
-        Stations[i].filename=(char*)malloc(sizeof(char)*strlen(argv[i+4]));
+        int templen = strlen(argv[i+4]);
+        Stations[i].filename=(char*)malloc(sizeof(char)*templen);
         strcpy(Stations[i].filename,argv[i+4]);
         struct in_addr newaddr;
         newaddr.s_addr=inet_addr(initial_multicastip);
@@ -204,7 +203,7 @@ int main(int argc,char* argv[])
             }
             if(FD_ISSET(STDIN_FILENO,&readfdset)) //server pressed a KEY
             {
-                Stdin_handler();
+                Stdin_handler(Stations);
             }
 
 
@@ -236,16 +235,16 @@ void free_resources(Station* Stations)
         pthread_cancel(clients[i].client_thread);
         close(clients[i].client_sock);
     }
-    perror("qweqeqweqw\n");
     for(int i=0;i<num_stations;i++)
     {
         free(Stations[i].filename);
     }
-    perror("xcvxvcxvx");
     free(Stations);
     close(tcp_welcome_socket);
     close(udp_server_socket);
     pthread_cancel(data_thread);
+    printf("We the real Niggas");
+    sleep(2);
     exit(EXIT_SUCCESS);                                                 //added to deny infinite LOOP
 }
 void* stream_song(void* Station_Pointer)
