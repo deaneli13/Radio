@@ -1,5 +1,9 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 //-----------------------------Includes--------------------------------------------
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
@@ -7,6 +11,7 @@
 #include <sys/socket.h>
 #include<arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include "errno.h"
@@ -60,19 +65,54 @@ int send_welcome(int client_index);                                         // s
 int send_announce(int client_index,char* song_name,uint8_t song_name_len);  // sends the client the song name at the station he asked for
 int send_permitsong(int client_index,uint8_t permission);                   // sends the client 1 or 0 if he can upload his song currently or not
 int send_newstations();                                                     // sends to everyone a message about the new station in the radio,done after uplod
+
+
+
+uint32_t pack_uint8_t_to_uint32_t(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
+{
+    return (uint32_t)a << 24 | (uint32_t)b << 16 | (uint32_t)c << 8 | (uint32_t)d;
+}
+
+void unpack_uint32_t_to_uint8_t(uint32_t in, uint8_t out[4])
+{
+    out[0] = (in >> 24) & 0xff;
+    out[1] = (in >> 16) & 0xff;
+    out[2] = (in >> 8) & 0xff;
+    out[3] = in & 0xff;
+}
+
+uint16_t pack_uint8_t_to_uint16_t(uint8_t a, uint8_t b)
+{
+    return  (uint16_t)a << 8 | (uint16_t)b;
+}
+
+void unpack_uint16_t_to_uint8_t(uint16_t in, uint8_t out[2])
+{
+    out[0] = (in >> 8) & 0xff;
+    out[1] = in & 0xff;
+}
 int main(int argc,char* argv[])
 {
-    num_stations=argc-2;
+    num_stations=argc-4;
     tcp_server_port=atoi(argv[1]);
     char* initial_multicastip=argv[2];
     multicastGroup=(uint32_t)inet_addr(initial_multicastip);               // changes the multicast group from a string to uint32 t
     fd_set fdset;
     udp_server_port=atoi(argv[3]);
+    printf("Argv 0: %s\n",argv[0]);
+    printf("Argv 1: %s\n",argv[1]);
+    printf("Argv 2: %s\n",argv[2]);
+    printf("Argv 3: %s\n",argv[3]);
+    printf("Argv 4: %s\n",argv[3]);
     Station* Stations=(Station*)malloc(sizeof(Station)*num_stations);
     pthread_t* data_threads=(pthread_t*)malloc(sizeof(pthread_t)*num_stations);
     for(int i=0;i<num_stations;i++)
     {
         Stations[i].fp=fopen(argv[i+4],"r");
+        if(Stations[i].fp==NULL)
+        {
+            printf("Cannot open file.\n");
+        }
         Stations[i].filename=basename(argv[i+4]);
         struct in_addr newaddr;
         newaddr.s_addr=inet_addr(initial_multicastip);
@@ -193,7 +233,6 @@ struct in_addr increaseip(struct in_addr initialmulticast,int increment)
     return newaddr;
 
 }
-
 void free_resources(Station* Stations,pthread_t* data_threads)
 {
     /*
@@ -229,10 +268,9 @@ void* stream_song(void* Station_Pointer)
     while(1)
     {
 
-
-
         for(int i=0;i<num_stations;i++)
         {
+            printf("IN STREAMING STATION %d\n",i);
             addr.sin_addr.s_addr=stations[i].multicastip;
             fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),stations[i].fp);
             sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
@@ -259,12 +297,24 @@ int send_welcome(int client_index)
     {
         perror("Failed to allocate memory for welcome message.\n");
     }
-    welcomebuffer[0]=WELCOME_REPLY;
-    welcomebuffer[1]=num_stations;
-    welcomebuffer[3]=multicastGroup;
-    welcomebuffer[7]=udp_server_port;
 
-    int bytes_sent=send(clients[client_index].client_sock,welcomebuffer,sizeof(welcomebuffer),0);
+    welcomebuffer[0]=WELCOME_REPLY;
+    uint8_t temp1[2];
+    unpack_uint16_t_to_uint8_t(num_stations,temp1);
+    welcomebuffer[1] = temp1[0];
+    welcomebuffer[2] = temp1[1];
+    uint8_t temp2[4];
+    unpack_uint32_t_to_uint8_t(multicastGroup,temp2);
+    welcomebuffer[3] = temp2[0];
+    welcomebuffer[4] = temp2[1];
+    welcomebuffer[5] = temp2[2];
+    welcomebuffer[6] = temp2[3];
+    unpack_uint16_t_to_uint8_t(udp_server_port,temp1);
+    welcomebuffer[7] = temp1[0];
+    welcomebuffer[8] = temp1[1];
+    for(int i=0;i<9;i++)
+        printf("WELCOME=%d\n",welcomebuffer[i]);
+    int bytes_sent=send(clients[client_index].client_sock,welcomebuffer,9*sizeof(uint8_t),0);
     if (bytes_sent < 0)
     {
         // Some other error occurred
@@ -272,6 +322,7 @@ int send_welcome(int client_index)
 
     }
     free(welcomebuffer);
+    printf("Bytes sent in sendwelcome: %d.\n",bytes_sent);
     return bytes_sent;
     // should return the number of bytes sent if res is successful, -1 if error.
 
@@ -402,6 +453,7 @@ void* control_user(void* client_index)
                 {
                     // we will send a welcome message
                     freshconnection=0;
+                    printf("SEND WELCOME.\n");
                     send_welcome(index);
                     state=ESTABLISHED;                                          //there is a connection and the client listens to music
 
