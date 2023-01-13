@@ -46,9 +46,11 @@ typedef struct Client
 {
     pthread_t client_thread;                                     //path to the song on the pc
     int client_sock;                                 //multicast ip for the
+    fd_set clientfdset;                              //fd set for each socket to listen
 } Client;
 //-------------------------Global Variables------------------------------------
 Client clients[MAX_CLIENTS]={{EMPTY_SOCKET,EMPTY_SOCKET}};                    // 100 control thread for max of 100 clients
+Station* Stations;
 uint8_t data_buffer[BUFFER_SIZE];
 int tcp_welcome_socket;                             //the tcp welcome socket which we will connect new clients with
 int udp_server_socket;                              //the udp client socket, which we use to stream songs
@@ -58,9 +60,10 @@ uint32_t multicastGroup;                            //holds the ip of the initia
 int tcp_server_port;
 int udp_server_port;
 pthread_t data_thread;
+int permitsong=1;
 fd_set fdset;
-pthread_mutex_t numclients_mutex;
-pthread_mutex_t numstationss_mutex;
+pthread_mutex_t numclients_mutex=PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t permitsong_mutex=PTHREAD_MUTEX_INITIALIZER;
 
 //--------------------------Functions declarations--------------------------------------------------
 void* stream_song(void* Stations);
@@ -70,11 +73,11 @@ void* control_user(void* client_index);
 int timeout_client(int client_index,const char* replystr);
 int Stdin_handler();
 int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len);
-int send_welcome(int client_index);                                         // sends a welcome message to the client that just connected
-int send_announce(int client_index,char* song_name,uint8_t song_name_len);  // sends the client the song name at the station he asked for
-int send_permitsong(int client_index,uint8_t permission);                   // sends the client 1 or 0 if he can upload his song currently or not
+int Welcome_handler(int client_index);                                         // sends a welcome message to the client that just connected
+int Announce_handler(int client_index);  // sends the client the song name at the station he asked for
+int Permit_handler(int client_index,uint8_t permission);                   // sends the client 1 or 0 if he can upload his song currently or not
 int send_newstations();                                                     // sends to everyone a message about the new station in the radio,done after upload
-int Wait_establisted_input(int index);                                      // waits for any input while client is listening
+int Established_handler(int index);                                      // waits for any input while client is listening
 
 
 
@@ -113,7 +116,7 @@ int main(int argc,char* argv[])
     printf("Argv 2: %s\n",argv[2]);
     printf("Argv 3: %s\n",argv[3]);
     printf("Argv 4: %s\n",argv[4]);
-    Station* Stations=(Station*)malloc(sizeof(Station)*num_stations);
+    Stations=(Station*)malloc(sizeof(Station)*num_stations);
     for(int i=0;i<num_stations;i++)
     {
         Stations[i].fp=fopen(argv[i+4],"r");
@@ -267,6 +270,10 @@ void* stream_song(void* Station_Pointer)
             addr.sin_addr.s_addr=stations[i].multicastip;
             fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),stations[i].fp);
             sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
+            struct timespec tim, tim2;
+            tim.tv_sec = 0;
+            tim.tv_nsec = (8000*1000)/num_stations;
+            nanosleep(&tim,&tim2);
         }
     }
 
@@ -281,7 +288,7 @@ int timeout_client(int client_index,const char* replystr)                       
     pthread_mutex_lock(&numclients_mutex);
     num_clients--;
     pthread_mutex_unlock(&numclients_mutex);
-    pthread_cancel(clients[client_index].client_thread);
+    pthread_exit(NULL);
 }
 int Stdin_handler(Station* stationsarr)                                     //assume the change was in STDIN andw e need to either change station or quit
 {
@@ -328,16 +335,15 @@ int Stdin_handler(Station* stationsarr)                                     //as
         }
     FD_CLR(STDIN_FILENO,&fdset);
 }
-int send_welcome(int client_index)
+int Welcome_handler(int client_index)
 {
     //waits for an Hello message
-    fd_set readfdset;
-    FD_ZERO(&readfdset);
-    FD_SET(clients[client_index].client_sock,&readfdset);
+    FD_ZERO(&clients[client_index].clientfdset);
+    FD_SET(clients[client_index].client_sock,&clients[client_index].clientfdset);
     struct timeval tv;
     tv.tv_sec=0;
     tv.tv_usec=300*1000; // 300 MS timeout for select
-    int selectres=select(FD_SETSIZE,&readfdset,NULL,NULL,&tv);
+    int selectres=select(FD_SETSIZE,&clients[client_index].clientfdset,NULL,NULL,&tv);
     if(selectres<0)
     {
         //perror("Failed to select on Listen Control.\n");
@@ -396,10 +402,18 @@ int send_welcome(int client_index)
     printf("Bytes sent in sendwelcome: %d.\n",bytes_sent);
     return ESTABLISHED;
 }
-int send_announce(int client_index,char* song_name,uint8_t song_name_len)
+int Announce_handler(int client_index)
 {
+    uint8_t announce_buffer[2];
+    recv(clients[client_index].client_sock,announce_buffer,2,0);
+    uint16_t newclientstation= pack_uint8_t_to_uint16_t(announce_buffer[0],announce_buffer[1]);
     // sends the client the song name at the station he asked for
-    uint8_t len=song_name_len;
+    if(newclientstation>=num_stations||newclientstation<0)
+    {
+        timeout_client(client_index,"The station does not exist.\n");
+        return OFFLINE;
+    }
+    uint8_t len=strlen(Stations[newclientstation].filename);
     uint8_t* announcebuffer=(uint8_t*)malloc(sizeof(uint8_t)*(len+2)); // size of song name,another byte for announce reply and another byte for length
     if(announcebuffer==NULL)
     {
@@ -407,25 +421,23 @@ int send_announce(int client_index,char* song_name,uint8_t song_name_len)
     }
     announcebuffer[0]=ANNOUNCE_REPLY;
     announcebuffer[1]=len;
-    for(uint8_t i=2;i<2+len;i++)
-    {
-        announcebuffer[i]=*(song_name+i);
-    }
+    strcpy(announcebuffer+2,Stations[newclientstation].filename);
+    printf("Songname we send: %s\n",announcebuffer);
 
-    int bytes_sent=send(clients[client_index].client_sock,announcebuffer,sizeof(announcebuffer),0);
+    int bytes_sent=send(clients[client_index].client_sock,announcebuffer,len+2,0);
     if(bytes_sent==-1)
     {
         char* errormsg=(char*)malloc(sizeof(char)*(70+len+1));
-        sprintf(errormsg,"Failed sending the announce message to client %d about song %s\n.",client_index,song_name);
+        sprintf(errormsg,"Failed sending the announce message to client %d about song %s\n.",client_index,Stations[newclientstation].filename);
         // perror("Failed sending the announce message to client %d about song %s\n.",client_index,song_name);
         perror(errormsg);
         free(errormsg);
     }
     free(announcebuffer);
-    return bytes_sent;
+    return ESTABLISHED;
 
 }
-int send_permitsong(int client_index,uint8_t permission)
+int Permit_handler(int client_index,uint8_t permission)
 {
     // sends the client 1 or 0 if he can upload his song currently or not
     uint8_t * permitbuffer=(uint8_t*)malloc(sizeof(uint8_t)*2);
@@ -503,34 +515,66 @@ int send_newstations()
     return failed_send;
 }
 
-int Wait_establisted_input(int index)
+int Established_handler(int index)
 {
-/*    while((count=recv(tcp_client_socket,&message_type,1,MSG_DONTWAIT))>0)
+    int count=0;
+    FD_SET(clients[index].client_sock,&clients[index].clientfdset);
+    uint8_t message_type;
+    uint8_t established_buffer[100];
+    int selectres=select(FD_SETSIZE,&clients[index].clientfdset,NULL,NULL,NULL);
+    if(selectres<0)
     {
-        switch(message_type)
+        perror("Select function failed.\n");
+    }
+    else                                                    //there is a change in one of the fds(STDIN or TCP)
+    {
+        uint8_t message_type;
+        int count=0;
+        while((count=recv(clients[index].client_sock,&message_type,1,MSG_DONTWAIT))>=0)
         {
-            case NEWSTATIONS_REPLY:
+            if(count>0)
             {
-                recv(tcp_client_socket,control_buffer,2,0);
-                Newstations_handler();
-                state=LISTENING;
+                switch(message_type)
+                {
+                    case ASK_SONG_TYPE:
+                    {
+
+                        return CHANGE_STATION;
+                        break;
+
+                    }
+                    case UPSONG_TYPE:
+                    {
+                        return DOWNLOADING;
+//                        recv(clients[index].client_sock,established_buffer,1,0);
+//                        int lentoread=(int)established_buffer[0];
+//                        recv(clients[index].client_sock,established_buffer,lentoread,0);
+//                        Invalid_handler(lentoread);
+                        break;
+
+                    }
+                    default:
+                    {
+                        printf("Incompatible message received at Established handler,terminating.\n");
+                        timeout_client(index,"invalid message type\n");
+                    }
+                }
+            }
+            else     //count =0, meaning we received nothing and the connection dropped
+            {
+                printf("A user disconnected from the radio\n");
+                timeout_client(index,"");
 
             }
-            case INVALID_REPLY:
-            {
-                recv(tcp_client_socket,control_buffer,1,0);
-                int lentoread=(int)control_buffer[0];
-                recv(tcp_client_socket,control_buffer,lentoread,0);
-                Invalid_handler(lentoread);
 
-            }
-            default:
-            {
-                printf("Incompatible message received at listen_control,terminating.\n");
-                Quit_Program(EXIT_FAILURE);
-            }
         }
-    }  */
+        if(count<0)
+        {
+            printf("error on receive\n");
+            timeout_client(index,"");
+        }
+    }
+
 }
 
 void* control_user(void* client_index)
@@ -538,7 +582,6 @@ void* control_user(void* client_index)
     // this function hanldes the control plane(the TCP sockets) with each of the server's clients.
     int index=*((int*)client_index);                  //the index of our client in the Clients array
     int state =OFFLINE;
-    int freshconnection=1;
 
     while(1)
     {
@@ -546,26 +589,18 @@ void* control_user(void* client_index)
         {
             case OFFLINE:                                                       // the client has just connected for the first time
             {
-                if(freshconnection==1)                                          // the connection is new-only first time
-                {
-                    // we will send a welcome message
-                    freshconnection=0;
-                    printf("SEND WELCOME.\n");
-                    state=send_welcome(index);                                //receive hello and send welcome message
-                }
-                else
-                {
-                    timeout_client(index,"Client has tried to reconnect after disconnecting.\n");                               //free the client's resources(sock and thread)
-                }
+                printf("SEND WELCOME.\n");
+                state=Welcome_handler(index);                              //established
                 break;
             }
             case CHANGE_STATION:                                                    //the client asked to switch a station
             {
+                state=Announce_handler(index);
                 break;
             }
             case ESTABLISHED:                                                       // the client is listening to some songs
             {
-                Wait_establisted_input(index);
+                state=Established_handler(index);
                 break;
             }
             case DOWNLOADING:                                                       // the client is uploading a song to us
