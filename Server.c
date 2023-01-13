@@ -60,7 +60,7 @@ uint32_t multicastGroup;                            //holds the ip of the initia
 int tcp_server_port;
 int udp_server_port;
 pthread_t data_thread;
-int permitsong=1;
+uint8_t permitsong=1;
 fd_set fdset;
 pthread_mutex_t numclients_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t permitsong_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -73,9 +73,9 @@ void* control_user(void* client_index);
 int timeout_client(int client_index,const char* replystr);
 int Stdin_handler();
 int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len);
+int send_permit(int client_index);                                             //send permission 1/0 to client
 int Welcome_handler(int client_index);                                         // sends a welcome message to the client that just connected
 int Announce_handler(int client_index);  // sends the client the song name at the station he asked for
-int Permit_handler(int client_index,uint8_t permission);                   // sends the client 1 or 0 if he can upload his song currently or not
 int send_newstations();                                                     // sends to everyone a message about the new station in the radio,done after upload
 int Established_handler(int index);                                      // waits for any input while client is listening
 
@@ -437,26 +437,75 @@ int Announce_handler(int client_index)
     return ESTABLISHED;
 
 }
-int Permit_handler(int client_index,uint8_t permission)
+int Established_handler(int index)
 {
-    // sends the client 1 or 0 if he can upload his song currently or not
-    uint8_t * permitbuffer=(uint8_t*)malloc(sizeof(uint8_t)*2);
-    if(permitbuffer==NULL)
+    int count=0;
+    FD_SET(clients[index].client_sock,&clients[index].clientfdset);
+    uint8_t message_type;
+    uint8_t established_buffer[100];
+    int selectres=select(FD_SETSIZE,&clients[index].clientfdset,NULL,NULL,NULL);
+    if(selectres<0)
     {
-        perror("Failed to allocate memory for permit message.\n");
+        perror("Select function failed.\n");
     }
-    permitbuffer[0]=PERMIT_REPLY;
-    permitbuffer[1]=permission;
-    int bytes_sent=send(clients[client_index].client_sock,permitbuffer,sizeof(permitbuffer),0);
-    if (bytes_sent < 0)
+    else                                                    //there is a change in one of the fds(STDIN or TCP)
     {
+        uint8_t message_type;
+        int count=0;
+        while((count=recv(clients[index].client_sock,&message_type,1,MSG_DONTWAIT))>=0)
+        {
+            if(count>0)
+            {
+                switch(message_type)
+                {
+                    case ASK_SONG_TYPE:
+                    {
+                        return CHANGE_STATION;
+                        break;
 
-        // Some other error occurred
-        perror("Failed to send on send_welcome.\n");
+                    }
+                    case UPSONG_TYPE:
+                    {
+                        printf("Received an upsong request\n");
+                        if(permitsong==1)
+                        {
+                            pthread_mutex_lock(&permitsong_mutex);
+                            permitsong=0;
+                            send_permit(index);
+                            return DOWNLOADING;
+                        }
+                        else
+                        {
+                            send_permit(index);
+                            return ESTABLISHED;
 
+                        }
+                        break;
+
+                    }
+
+                    default:
+                    {
+                        printf("Incompatible message received at Established handler,terminating.\n");
+                        timeout_client(index,"invalid message type\n");
+                    }
+                }
+            }
+            else     //count =0, meaning we received nothing and the connection dropped
+            {
+                printf("A user disconnected from the radio\n");
+                timeout_client(index,"");
+
+            }
+
+        }
+        if(count<0)
+        {
+            printf("error on receive\n");
+            timeout_client(index,"");
+        }
     }
-    free(permitbuffer);
-    return bytes_sent;
+
 }
 int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len)
 {
@@ -481,6 +530,21 @@ int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_
     }
     free(invalidbuffer);
     return bytes_sent;
+
+}
+int send_permit(int client_index)
+{
+    uint8_t permitsendbuffer[2];
+    permitsendbuffer[0]=PERMIT_REPLY;
+    permitsendbuffer[1]=permitsong;
+    int sendres=send(clients[client_index].client_sock,permitsendbuffer,2,0);
+    if(sendres<0)
+    {
+        printf("Failed to send on permit res\n");
+    }
+    printf("Sent permit from server\n");
+    return 0;
+
 
 }
 int send_newstations()
@@ -515,67 +579,7 @@ int send_newstations()
     return failed_send;
 }
 
-int Established_handler(int index)
-{
-    int count=0;
-    FD_SET(clients[index].client_sock,&clients[index].clientfdset);
-    uint8_t message_type;
-    uint8_t established_buffer[100];
-    int selectres=select(FD_SETSIZE,&clients[index].clientfdset,NULL,NULL,NULL);
-    if(selectres<0)
-    {
-        perror("Select function failed.\n");
-    }
-    else                                                    //there is a change in one of the fds(STDIN or TCP)
-    {
-        uint8_t message_type;
-        int count=0;
-        while((count=recv(clients[index].client_sock,&message_type,1,MSG_DONTWAIT))>=0)
-        {
-            if(count>0)
-            {
-                switch(message_type)
-                {
-                    case ASK_SONG_TYPE:
-                    {
 
-                        return CHANGE_STATION;
-                        break;
-
-                    }
-                    case UPSONG_TYPE:
-                    {
-                        return DOWNLOADING;
-//                        recv(clients[index].client_sock,established_buffer,1,0);
-//                        int lentoread=(int)established_buffer[0];
-//                        recv(clients[index].client_sock,established_buffer,lentoread,0);
-//                        Invalid_handler(lentoread);
-                        break;
-
-                    }
-                    default:
-                    {
-                        printf("Incompatible message received at Established handler,terminating.\n");
-                        timeout_client(index,"invalid message type\n");
-                    }
-                }
-            }
-            else     //count =0, meaning we received nothing and the connection dropped
-            {
-                printf("A user disconnected from the radio\n");
-                timeout_client(index,"");
-
-            }
-
-        }
-        if(count<0)
-        {
-            printf("error on receive\n");
-            timeout_client(index,"");
-        }
-    }
-
-}
 
 void* control_user(void* client_index)
 {
@@ -605,6 +609,7 @@ void* control_user(void* client_index)
             }
             case DOWNLOADING:                                                       // the client is uploading a song to us
             {
+                printf("DOWNLOADING???\n");
                 break;
             }
 

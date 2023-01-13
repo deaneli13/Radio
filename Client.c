@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include<arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
@@ -49,15 +50,15 @@ int currstation=0;
 int nextstation=0;                                               //nextstation is updated every time we call asksong, then we signal the data thread to change station
 uint16_t nextstationcandidate=0;
 int changestationflag=1;
-
+uint8_t uploadfilebuffer[256];
 
 //--------------------------Functions declarations--------------------------------------------------
 void Quit_Program();                                             //quit the program entirely
 int Connect_to_server(const char* server_ip, int server_port);
 int Wait_welcome();
 int Send_hello();
-void* Listen_data(void* no_args);                               // this function listens to a song, the udp thread will run it
-int Change_station_control();                     //this function removes the client from his multicast group and joins another multicast group
+void* Listen_data(void* no_args);                                // this function listens to a song, the udp thread will run it
+int Change_station_control();                                    //this function removes the client from his multicast group and joins another multicast group
 int Leave_Station();                                            //leave the current station[thread func] as a signal,then rerun Change_station
 int Connect_station();
 int Stdin_handler();
@@ -65,6 +66,8 @@ int Newstations_handler();
 int Invalid_handler(int len);
 int Announce_handler(int len);
 int Listen_control();
+int Upsong_handler();                                           //manages the Upsong state
+int Approval_handler();                                         //manages the Wait approval state
 struct in_addr increaseip(struct in_addr initialaddress,int increment);       //increase the ip of an ip address by
 
 
@@ -136,10 +139,12 @@ int main(int argc,char* argv[])
             }
             case WAIT_APPROVAL:
             {
+                Approval_handler();
                 break;
             }
             case UPLOADING:
             {
+                printf("UPLOADING???\n");
                 break;
             }
         }
@@ -480,8 +485,7 @@ int Stdin_handler()                                     //assume the change was 
     }
     else if((buff[0]=='s'||buff[0]=='S') &&strlen(buff)==1)                      //client pressed Q and wants to exit
     {
-        printf("Insert song name.\n");
-        //"UPLOAD SONG"
+        state = WAIT_APPROVAL;
     }
     else                                                                        //client pressed neither S nor Q
     {
@@ -537,4 +541,124 @@ int Announce_handler(int len)               // read the control buffer and assum
     putchar('\n');
 
     return 1;
+}
+int Approval_handler()
+{
+    printf("Enter song name: ");
+    fgets(uploadfilebuffer,256,stdin);
+    if (strlen(uploadfilebuffer)>0)
+        uploadfilebuffer[strlen(uploadfilebuffer)-1]='\0';
+    printf("The song name you entered to upload is: %s\n",uploadfilebuffer);
+    if (access(uploadfilebuffer, F_OK) == -1)
+    {
+        printf("File does not exist in current directory\n");
+        state=LISTENING;
+
+    }
+    else                // file name is valid and is inside our directory
+    {
+
+        FILE* file = fopen(uploadfilebuffer, "r");
+        if (file != NULL)
+        {
+            struct stat buffer;
+            int filefd= fileno(file);
+            if (fstat(filefd, &buffer) == 0)
+            {
+                printf("File size in bytes: %ld\n", buffer.st_size);
+            }
+            fclose(file);
+            uint8_t* sendbuffer=(uint8_t*)malloc(sizeof(uint8_t)*(strlen(uploadfilebuffer)+6));
+            sendbuffer[0]=UPSONG_TYPE;
+            uint8_t temp[4];
+            unpack_uint32_t_to_uint8_t(buffer.st_size,temp);
+            for(int i=0;i<4;i++)
+                sendbuffer[1+i]=temp[i];
+            sendbuffer[5]=strlen(uploadfilebuffer);
+            strcpy(sendbuffer+6,uploadfilebuffer);
+            int sendres=send(tcp_client_socket,sendbuffer,strlen(uploadfilebuffer)+6,0);
+            if(sendres<0)
+            {
+                perror("Failed to send file in approval handler\n");
+
+            }
+            struct timeval tv;
+            tv.tv_sec=0;
+            tv.tv_usec=300*1000; // 300 MS timeout for select
+            int upsongflag=1;
+            FD_SET(tcp_client_socket,&fdset);
+            while(upsongflag)
+            {
+                printf("in while upsongflag");
+                int select_res = select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
+                if (select_res > 0)
+                {
+                    //success- we received a message
+                    uint8_t message_type;
+                    while (recv(tcp_client_socket, &message_type, 1, 0) > 0)
+                    {
+                        printf("in while recv upsong\n");
+                        switch (message_type)
+                        {
+                            case NEWSTATIONS_REPLY:
+                            {
+                                recv(tcp_client_socket, control_buffer, 2, 0);
+                                Newstations_handler();
+                                break;
+                            }
+                            case INVALID_REPLY:
+                            {
+                                recv(tcp_client_socket, control_buffer, 1, 0);
+                                int lentoread = (int) control_buffer[0];
+                                recv(tcp_client_socket, control_buffer, lentoread, 0);
+                                Invalid_handler(lentoread);
+                                state = OFFLINE;
+                                break;
+
+                            }
+                            case PERMIT_REPLY:
+                            {
+                                printf("Received PERMIT REPLY\n");
+                                upsongflag = 0;
+                                recv(tcp_client_socket, control_buffer, 1, 0);
+                                printf("controlbuffer[0]: %d\n",control_buffer[0]);
+                                if(control_buffer[0]==1)
+                                    state=UPLOADING;
+                                else if(control_buffer[0]==0)
+                                    state=LISTENING;
+                                else
+                                    {
+                                        printf("Received invalid permit message.\n");
+                                        Quit_Program(EXIT_FAILURE);
+                                    }
+                                break;
+                            }
+                            default:
+                            {
+                                printf("Incompatible message received at UPSONG REQUEST,terminating.\n");
+                                Quit_Program(EXIT_FAILURE);
+                                break;
+                            }
+                        }
+                    }
+                }
+                else if (select_res == 0)               //TIMEOUT
+                {
+                    printf("Timeout on UPSONG REQUEST.\n");
+                    Quit_Program(EXIT_FAILURE);
+                }
+                else if (select_res == -1)
+                {
+                    printf("ERROR IN SELECT in UPSONG REQUEST\n");
+                    Quit_Program(EXIT_FAILURE);
+                }
+            }
+
+        }
+
+        else                                //upload file cannot be opened
+        {
+            printf("Error getting file information\n");
+        }
+    }
 }
