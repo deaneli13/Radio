@@ -52,7 +52,7 @@ typedef struct Client
     int station_updt;
 } Client;
 //-------------------------Global Variables------------------------------------
-Client clients[MAX_CLIENTS]={{EMPTY_SOCKET,EMPTY_SOCKET}};                    // 100 control thread for max of 100 clients
+Client clients[MAX_CLIENTS];                    // 100 control thread for max of 100 clients
 Station* Stations;
 uint8_t data_buffer[BUFFER_SIZE];
 int tcp_welcome_socket;                             //the tcp welcome socket which we will connect new clients with
@@ -112,6 +112,11 @@ void unpack_uint16_t_to_uint8_t(uint16_t in, uint8_t out[2])
 }
 int main(int argc,char* argv[])
 {
+    for(int i=0;i<MAX_CLIENTS;i++)
+    {
+        clients[i].client_sock=EMPTY_SOCKET;
+
+    }
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_settype(&attr,PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&stationsmutex,&attr);
@@ -274,15 +279,16 @@ void* stream_song(void* Station_Pointer)
 
         for(int i=0;i<num_stations;i++)
         {
-            pthread_mutex_lock(&stationsmutex);
+            //pthread_mutex_lock(&stationsmutex);
             addr.sin_addr.s_addr=Stations[i].multicastip;
-            fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),Stations[i].fp);
+            if(fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),Stations[i].fp)==0)
+                rewind(Stations[i].fp);
             sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
             struct timespec tim, tim2;
             tim.tv_sec = 0;
-            tim.tv_nsec = (6250*1000)/num_stations;
+            tim.tv_nsec = (8000*1000);///num_stations
             nanosleep(&tim,&tim2);
-            pthread_mutex_unlock(&stationsmutex);
+            //pthread_mutex_unlock(&stationsmutex);
         }
     }
 
@@ -500,7 +506,7 @@ int Downloading_handler(int index)
     tv.tv_usec=0;
     uint32_t totalbytesreceived=0;
     uint8_t buffer[BUFFER_SIZE];
-    FILE* file=fopen((char*)songname,"w");
+    FILE* file=fopen("tempfile","w");
     FD_SET(clients[index].client_sock,&clients[index].clientfdset);
     if(file==NULL)
     {
@@ -558,6 +564,8 @@ int Downloading_handler(int index)
         pthread_mutex_lock(&stationsmutex);
         //assume we have the complete file
         fclose(file);
+        if(rename("tempfile",(char *)songname)==-1)
+            perror("Failed renaming the file.\n");
         Stations = (Station *) realloc(Stations, sizeof(Station) * num_stations+1);
         Stations[num_stations].filename = (char *) malloc(sizeof(char) * strlen((char *) songname));
         strcpy(Stations[num_stations].filename, (char *) songname);
@@ -651,8 +659,10 @@ int send_newstations()
     int failed_send=0;
     for(int i=0;i<MAX_CLIENTS;i++)
     {
-        if(clients[i].client_sock>0)                                                            //client has an open socket
+
+        if(clients[i].client_sock!=EMPTY_SOCKET)                                                            //client has an open socket
         {
+            printf("Sending newstations to socket %d\n",i);
             int bytes_sent=send(clients[i].client_sock,newstationsbuffer,sizeof(newstationsbuffer),0);
             if (bytes_sent < 0)
             {

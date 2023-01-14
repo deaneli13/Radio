@@ -130,27 +130,32 @@ int main(int argc,char* argv[])
         {
             case OFFLINE:
             {
+                printf("State=offline\n");
                 Connect_to_server(server_ip, server_port);//connect
                 state = WAIT_WELCOME;
                 break;
             }
             case LISTENING:
             {
+                printf("State=listening\n");
                 Listen_control();
                 break;
             }
             case WAIT_WELCOME:
             {
+                printf("State=waitwelcome\n");
                 Wait_welcome();
                 break;
             }
             case WAIT_SONGINFO:
             {
+                printf("State=waitsonginfo\n");
                 Change_station_control(nextstationcandidate);           //send asksong, get responce and change enxtstation
                 break;
             }
             case WAIT_APPROVAL:
             {
+                printf("State=waitapproval\n");
                 Approval_handler();
                 break;
             }
@@ -230,42 +235,44 @@ int Listen_control()
     }
     else                                                    //there is a change in one of the fds(STDIN or TCP)
     {
+        if(FD_ISSET(tcp_client_socket,&fdset))                                             //there is TCP input
+        {
+            uint8_t message_type;
+            int count=0;
+            while((count=recv(tcp_client_socket,&message_type,1,MSG_DONTWAIT))>0)
+            {
+                switch(message_type)
+                {
+                    case NEWSTATIONS_REPLY:
+                    {
+                        printf("newstations reply at LISTEN CONTROL?\n");
+                        recv(tcp_client_socket,control_buffer,2,0);
+                        Newstations_handler();
+                        state=LISTENING;
+
+                    }
+                    case INVALID_REPLY:
+                    {
+                        recv(tcp_client_socket,control_buffer,1,0);
+                        int lentoread=(int)control_buffer[0];
+                        recv(tcp_client_socket,control_buffer,lentoread,0);
+                        Invalid_handler(lentoread);
+
+                    }
+                    default:
+                    {
+                        printf("Incompatible message received at listen_control,terminating.\n");
+                        Quit_Program(EXIT_FAILURE);
+                    }
+                }
+            }
+
+        }
         if(FD_ISSET(STDIN_FILENO,&fdset))                    // the change was in stdin
         {
             Stdin_handler();
         }
-        else                                                //there is TCP input
-        {
-             uint8_t message_type;
-             int count=0;
-             while((count=recv(tcp_client_socket,&message_type,1,MSG_DONTWAIT))>0)
-             {
-                 switch(message_type)
-                 {
-                     case NEWSTATIONS_REPLY:
-                     {
-                         recv(tcp_client_socket,control_buffer,2,0);
-                         Newstations_handler();
-                         state=LISTENING;
 
-                     }
-                     case INVALID_REPLY:
-                     {
-                         recv(tcp_client_socket,control_buffer,1,0);
-                         int lentoread=(int)control_buffer[0];
-                         recv(tcp_client_socket,control_buffer,lentoread,0);
-                         Invalid_handler(lentoread);
-
-                     }
-                     default:
-                     {
-                         printf("Incompatible message received at listen_control,terminating.\n");
-                         Quit_Program(EXIT_FAILURE);
-                     }
-                 }
-             }
-
-        }
     }
 }
 int Connect_to_server(const char* server_ip, int server_port)
@@ -351,6 +358,7 @@ int Wait_welcome()
                 {
                     case NEWSTATIONS_REPLY:
                     {
+                        printf("Newstations reply?\n");
                         recv(tcp_client_socket,control_buffer,2,0);
                         Newstations_handler();
                         state=LISTENING;
@@ -368,7 +376,7 @@ int Wait_welcome()
                     }
                     default:
                     {
-                        printf("Incompatible message received at listen_control,terminating.\n");
+                        perror("Incompatible message received at wait_welcome,terminating.\n");
                         Quit_Program(EXIT_FAILURE);
                         break;
                     }
