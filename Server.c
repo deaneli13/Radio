@@ -22,7 +22,7 @@
 #define DOWNLOADING   2
 #define CHANGE_STATION  3
 #define WAIT_APPROVAL   4
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 1024
 #define MAX_CLIENTS 100
 #define EMPTY_SOCKET -5
 
@@ -35,6 +35,8 @@
 #define ASK_SONG_TYPE 1
 #define UPSONG_TYPE 2
 
+#define MAX_FILE_SIZE 10*1048576
+#define MIN_FILE_SIZE 2000
 
 typedef struct Station
 {
@@ -46,7 +48,8 @@ typedef struct Client
 {
     pthread_t client_thread;                                     //path to the song on the pc
     int client_sock;                                 //multicast ip for the
-    fd_set clientfdset;                              //fd set for each socket to listen
+    fd_set clientfdset;                                     //fd set for each socket to listen
+    int station_updt;
 } Client;
 //-------------------------Global Variables------------------------------------
 Client clients[MAX_CLIENTS]={{EMPTY_SOCKET,EMPTY_SOCKET}};                    // 100 control thread for max of 100 clients
@@ -64,7 +67,10 @@ uint8_t permitsong=1;
 fd_set fdset;
 pthread_mutex_t numclients_mutex=PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t permitsong_mutex=PTHREAD_MUTEX_INITIALIZER;
-
+pthread_mutex_t stationsmutex;
+pthread_mutexattr_t  attr;
+uint32_t expected_songsize;
+uint8_t songname[256];
 //--------------------------Functions declarations--------------------------------------------------
 void* stream_song(void* Stations);
 struct in_addr increaseip(struct in_addr initialmulticast,int increment);
@@ -106,16 +112,14 @@ void unpack_uint16_t_to_uint8_t(uint16_t in, uint8_t out[2])
 }
 int main(int argc,char* argv[])
 {
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr,PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&stationsmutex,&attr);
     num_stations=argc-4;
     tcp_server_port=atoi(argv[1]);
     char* initial_multicastip=argv[2];
     multicastGroup=(uint32_t)inet_addr(initial_multicastip);               // changes the multicast group from a string to uint32
     udp_server_port=atoi(argv[3]);
-    printf("Argv 0: %s\n",argv[0]);
-    printf("Argv 1: %s\n",argv[1]);
-    printf("Argv 2: %s\n",argv[2]);
-    printf("Argv 3: %s\n",argv[3]);
-    printf("Argv 4: %s\n",argv[4]);
     Stations=(Station*)malloc(sizeof(Station)*num_stations);
     for(int i=0;i<num_stations;i++)
     {
@@ -203,9 +207,12 @@ int main(int argc,char* argv[])
                         break;
                     }
                 }
+                pthread_mutex_lock(&numclients_mutex);
                 num_clients++;
+                pthread_mutex_unlock(&numclients_mutex);
                 pthread_create(&(clients[newclientidx].client_thread),NULL,control_user,&newclientidx);
                 clients[newclientidx].client_sock=newsocket;
+                clients[newclientidx].station_updt = 1;
 
             }
             if(FD_ISSET(STDIN_FILENO,&fdset)) //server pressed a KEY
@@ -267,13 +274,15 @@ void* stream_song(void* Station_Pointer)
 
         for(int i=0;i<num_stations;i++)
         {
-            addr.sin_addr.s_addr=stations[i].multicastip;
-            fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),stations[i].fp);
+            pthread_mutex_lock(&stationsmutex);
+            addr.sin_addr.s_addr=Stations[i].multicastip;
+            fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),Stations[i].fp);
             sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
             struct timespec tim, tim2;
             tim.tv_sec = 0;
-            tim.tv_nsec = (8000*1000)/num_stations;
+            tim.tv_nsec = (6250*1000)/num_stations;
             nanosleep(&tim,&tim2);
+            pthread_mutex_unlock(&stationsmutex);
         }
     }
 
@@ -399,7 +408,6 @@ int Welcome_handler(int client_index)
         perror("Failed to send on send_welcome.\n");
 
     }
-    printf("Bytes sent in sendwelcome: %d.\n",bytes_sent);
     return ESTABLISHED;
 }
 int Announce_handler(int client_index)
@@ -414,26 +422,15 @@ int Announce_handler(int client_index)
         return OFFLINE;
     }
     uint8_t len=strlen(Stations[newclientstation].filename);
-    uint8_t* announcebuffer=(uint8_t*)malloc(sizeof(uint8_t)*(len+2)); // size of song name,another byte for announce reply and another byte for length
-    if(announcebuffer==NULL)
-    {
-        perror("Failed to allocate memory for announce message.\n");
-    }
+    uint8_t announcebuffer[BUFFER_SIZE];// size of song name,another byte for announce reply and another byte for length
     announcebuffer[0]=ANNOUNCE_REPLY;
     announcebuffer[1]=len;
     strcpy(announcebuffer+2,Stations[newclientstation].filename);
-    printf("Songname we send: %s\n",announcebuffer);
-
     int bytes_sent=send(clients[client_index].client_sock,announcebuffer,len+2,0);
     if(bytes_sent==-1)
     {
-        char* errormsg=(char*)malloc(sizeof(char)*(70+len+1));
-        sprintf(errormsg,"Failed sending the announce message to client %d about song %s\n.",client_index,Stations[newclientstation].filename);
-        // perror("Failed sending the announce message to client %d about song %s\n.",client_index,song_name);
-        perror(errormsg);
-        free(errormsg);
+        perror("Announce handler;");
     }
-    free(announcebuffer);
     return ESTABLISHED;
 
 }
@@ -442,7 +439,6 @@ int Established_handler(int index)
     int count=0;
     FD_SET(clients[index].client_sock,&clients[index].clientfdset);
     uint8_t message_type;
-    uint8_t established_buffer[100];
     int selectres=select(FD_SETSIZE,&clients[index].clientfdset,NULL,NULL,NULL);
     if(selectres<0)
     {
@@ -466,20 +462,7 @@ int Established_handler(int index)
                     }
                     case UPSONG_TYPE:
                     {
-                        printf("Received an upsong request\n");
-                        if(permitsong==1)
-                        {
-                            pthread_mutex_lock(&permitsong_mutex);
-                            permitsong=0;
-                            send_permit(index);
-                            return DOWNLOADING;
-                        }
-                        else
-                        {
-                            send_permit(index);
-                            return ESTABLISHED;
-
-                        }
+                        return send_permit(index);;
                         break;
 
                     }
@@ -507,43 +490,151 @@ int Established_handler(int index)
     }
 
 }
+
+int Downloading_handler(int index)
+{
+    printf("songname: %s\n",(char *)songname);
+    printf("Expected songsize[B]: %d\n",(uint32_t)expected_songsize);
+    struct timeval tv;
+    tv.tv_sec=3;
+    tv.tv_usec=0;
+    uint32_t totalbytesreceived=0;
+    uint8_t buffer[BUFFER_SIZE];
+    FILE* file=fopen((char*)songname,"w");
+    FD_SET(clients[index].client_sock,&clients[index].clientfdset);
+    if(file==NULL)
+    {
+        perror("Failed to create file in downloading handler\n");
+    }
+
+    while(totalbytesreceived<expected_songsize)
+    {
+        //FD_ZERO(&clients[index].clientfdset);
+        //FD_SET(clients[index].client_sock,&clients[index].clientfdset);
+        int selectres=select(clients[index].client_sock+1,&clients[index].clientfdset,NULL,NULL,NULL);
+        if(selectres==0)        //timeout
+        {
+            printf("A\n");
+            fclose(file);
+            //remove((char *)songname);
+            timeout_client(index,"select timeout.\n");
+            return OFFLINE;
+        }
+        if(selectres==-1)        //error
+        {
+            printf("B\n");
+            fclose(file);
+            //remove((char *)songname);
+            timeout_client(index,"select =-1.\n");
+            return OFFLINE;
+        }
+        else                //select success
+        {
+            int recvres=recv(clients[index].client_sock,buffer,BUFFER_SIZE,MSG_DONTWAIT); //success
+            struct timespec tim, tim2;
+//            tim.tv_sec = 0;
+//            tim.tv_nsec = (8000*1000)/num_stations;
+//            nanosleep(&tim,&tim2);
+            if(recvres>0)
+            {
+                totalbytesreceived+=recvres;
+                fwrite(buffer,sizeof(uint8_t),recvres,file);
+            }
+            else        //either the client dc or there was an error
+            {
+                printf("D\n");
+                fclose(file);
+                //remove((char *)songname);
+                timeout_client(index,"Failed to download the song.\n");
+                return OFFLINE;
+            }
+
+        }
+        tv.tv_sec=3;
+        tv.tv_usec=0;
+    }
+    if(totalbytesreceived==expected_songsize)
+    {
+        pthread_mutex_lock(&stationsmutex);
+        //assume we have the complete file
+        fclose(file);
+        Stations = (Station *) realloc(Stations, sizeof(Station) * num_stations+1);
+        Stations[num_stations].filename = (char *) malloc(sizeof(char) * strlen((char *) songname));
+        strcpy(Stations[num_stations].filename, (char *) songname);
+        Stations[num_stations].fp=fopen((char*)songname,"r");
+        struct in_addr newaddr;
+        newaddr.s_addr = multicastGroup;
+        newaddr = increaseip(newaddr, num_stations);
+        Stations[num_stations].multicastip = newaddr.s_addr;
+        num_stations++;
+        send_newstations();
+        pthread_mutex_unlock(&stationsmutex);
+        pthread_mutex_unlock(&permitsong_mutex);
+        return ESTABLISHED;
+    }
+
+
+
+
+}
 int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len)
 {
     // sends an error message of invalid command to client who typed something stupid
-    uint8_t * invalidbuffer=(uint8_t*)malloc(sizeof(uint8_t)*(strlen(reply_string)+2));
-    if(invalidbuffer==NULL)
-    {
-        perror("Failed to allocate memory for invalid message.\n");
-    }
+    uint8_t invalidbuffer[BUFFER_SIZE];
     invalidbuffer[0]=INVALID_REPLY;
     invalidbuffer[1]=(uint8_t)strlen(reply_string);
     for(uint8_t i=2;i<2+reply_string_len;i++)
     {
         invalidbuffer[i]=*(reply_string+i);
     }
-    int bytes_sent=send(clients[client_index].client_sock,invalidbuffer,sizeof(invalidbuffer),0);
+    int bytes_sent=send(clients[client_index].client_sock,invalidbuffer,(sizeof(uint8_t)*reply_string_len+2),0);
     if (bytes_sent < 0)
     {
         // Some other error occurred
         perror("Failed to send on send_invalid.\n");
 
     }
-    free(invalidbuffer);
     return bytes_sent;
 
 }
 int send_permit(int client_index)
 {
+    uint8_t allow=1;
     uint8_t permitsendbuffer[2];
+    uint8_t recvbuffer[5];
+    recv(clients[client_index].client_sock,recvbuffer,sizeof(uint8_t)*5,0);
+    uint32_t songsize= pack_uint8_t_to_uint32_t(recvbuffer[0],recvbuffer[01],recvbuffer[2],recvbuffer[3]);
+    expected_songsize=songsize;                     //global variable
+
+    if(songsize>MAX_FILE_SIZE||songsize<MIN_FILE_SIZE)
+        allow=0;
+    bzero(songname,256);
+    recv(clients[client_index].client_sock,songname,recvbuffer[4],0);       //songname is a global variable that holds the name
+    for(int i=0;i<num_stations;i++)
+    {
+        if(strcmp((char*)songname,Stations[i].filename)==0)
+        {
+            allow=0;
+            break;
+        }
+    }
+    if(permitsong==0)
+        allow=0;
     permitsendbuffer[0]=PERMIT_REPLY;
-    permitsendbuffer[1]=permitsong;
+    permitsendbuffer[1]=allow;
     int sendres=send(clients[client_index].client_sock,permitsendbuffer,2,0);
     if(sendres<0)
     {
         printf("Failed to send on permit res\n");
     }
     printf("Sent permit from server\n");
-    return 0;
+    if(allow)
+    {
+        pthread_mutex_lock(&permitsong_mutex);
+        permitsong=0;
+        return DOWNLOADING;
+    }
+    return ESTABLISHED;
 
 
 }
@@ -551,13 +642,12 @@ int send_newstations()
 {
     // updates all the clients about the new number of stations available(done after new station was added)
     // sends to everyone a message about the new station in the radio,done after uplod
-    uint8_t * newstationsbuffer=(uint8_t*)malloc(sizeof(uint8_t)*3);
-    if(newstationsbuffer==NULL)
-    {
-        perror("Failed to allocate memory for newstations message.\n");
-    }
+    uint8_t newstationsbuffer[3];
     newstationsbuffer[0]=NEWSTATIONS_REPLY;
-    newstationsbuffer[1]=num_stations;
+    uint8_t temp[2];
+    unpack_uint16_t_to_uint8_t(num_stations,temp);
+    newstationsbuffer[1]=temp[0];
+    newstationsbuffer[2]=temp[1];
     int failed_send=0;
     for(int i=0;i<MAX_CLIENTS;i++)
     {
@@ -574,8 +664,6 @@ int send_newstations()
         }
 
     }
-
-    free(newstationsbuffer);
     return failed_send;
 }
 
@@ -609,7 +697,7 @@ void* control_user(void* client_index)
             }
             case DOWNLOADING:                                                       // the client is uploading a song to us
             {
-                printf("DOWNLOADING???\n");
+                state=Downloading_handler(index);
                 break;
             }
 

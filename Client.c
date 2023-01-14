@@ -68,9 +68,21 @@ int Announce_handler(int len);
 int Listen_control();
 int Upsong_handler();                                           //manages the Upsong state
 int Approval_handler();                                         //manages the Wait approval state
-struct in_addr increaseip(struct in_addr initialaddress,int increment);       //increase the ip of an ip address by
+int Uploading_handler();
 
+struct in_addr increaseip(struct in_addr initialaddress,int increment)
+{
+    struct in_addr newaddr;
+    newaddr.s_addr  = htonl(ntohl(initialaddress.s_addr) + increment);
+    return newaddr;
 
+}
+
+void printProgress(long totalBytesSent, long totalBytes)
+{
+    int progress = (int) (totalBytesSent * 100.0 / totalBytes);
+    printf("\rSending progress: [%d%%]", progress);
+}
 
 uint32_t pack_uint8_t_to_uint32_t(uint8_t a, uint8_t b, uint8_t c, uint8_t d)
 {
@@ -144,7 +156,8 @@ int main(int argc,char* argv[])
             }
             case UPLOADING:
             {
-                printf("UPLOADING???\n");
+                //printf("UPLOADING???\n");
+                Uploading_handler();
                 break;
             }
         }
@@ -460,15 +473,6 @@ int Change_station_control()
 
 }
 
-
-struct in_addr increaseip(struct in_addr initialaddress,int increment)
-{
-    struct in_addr newaddr;
-    newaddr.s_addr  = htonl(ntohl(initialaddress.s_addr) + increment);
-    return newaddr;
-
-}
-
 int Stdin_handler()                                     //assume the change was in STDIN andw e need to either change station or quit
 {
     char buff[100]={0};
@@ -589,25 +593,27 @@ int Approval_handler()
             FD_SET(tcp_client_socket,&fdset);
             while(upsongflag)
             {
-                printf("in while upsongflag");
+                printf("in while upsongflag\n");
                 int select_res = select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
                 if (select_res > 0)
                 {
                     //success- we received a message
                     uint8_t message_type;
-                    while (recv(tcp_client_socket, &message_type, 1, 0) > 0)
+                    while (recv(tcp_client_socket, &message_type, 1, MSG_DONTWAIT) > 0)
                     {
                         printf("in while recv upsong\n");
                         switch (message_type)
                         {
                             case NEWSTATIONS_REPLY:
                             {
+                                printf("newstations\n");
                                 recv(tcp_client_socket, control_buffer, 2, 0);
                                 Newstations_handler();
                                 break;
                             }
                             case INVALID_REPLY:
                             {
+                                printf("invalid\n");
                                 recv(tcp_client_socket, control_buffer, 1, 0);
                                 int lentoread = (int) control_buffer[0];
                                 recv(tcp_client_socket, control_buffer, lentoread, 0);
@@ -620,8 +626,10 @@ int Approval_handler()
                             {
                                 printf("Received PERMIT REPLY\n");
                                 upsongflag = 0;
-                                recv(tcp_client_socket, control_buffer, 1, 0);
+                                int wwww=recv(tcp_client_socket, control_buffer, 2, 0);
+                                printf("www=%d\n",wwww);
                                 printf("controlbuffer[0]: %d\n",control_buffer[0]);
+                                printf("controlbuffer[1]: %d\n",control_buffer[1]);
                                 if(control_buffer[0]==1)
                                     state=UPLOADING;
                                 else if(control_buffer[0]==0)
@@ -662,3 +670,114 @@ int Approval_handler()
         }
     }
 }
+int Uploading_handler()
+{
+    FILE* file = fopen(uploadfilebuffer, "r");
+    if (file == NULL)
+    {
+        perror("Failed opening the file in uploading handler\n");
+    }
+    /* Get the size of the file to be sent */
+    fseek(file, 0, SEEK_END);
+    uint32_t filelen = ftell(file);
+    rewind(file);
+    uint8_t sending_buffer[BUFFER_SIZE];
+    int bytesRead=0,totalBytesSent=0;
+    struct timespec tim, tim2;
+    tim.tv_sec = 0;
+    tim.tv_nsec = (8000*1000);
+    while (1)
+    {
+        /* Read from the file */
+        bytesRead = fread(sending_buffer, 1, sizeof(sending_buffer), file);
+        if (bytesRead == 0)         //finished reading from file
+        {
+            fclose(file);
+            break;
+        }
+        /* Send data to the server */
+        int q;
+        if ((q=write(tcp_client_socket, sending_buffer, bytesRead)) < 0)
+        {      //failed writing to socket
+            perror("ERROR writing to socket");
+            state=OFFLINE;
+            fclose(file);
+            Quit_Program(EXIT_FAILURE);
+            break;
+        }
+        totalBytesSent += bytesRead;
+        printProgress(totalBytesSent, filelen);
+        nanosleep(&tim,&tim2);
+    }
+    if(totalBytesSent==filelen)
+    {
+        printf("\n");
+        FD_ZERO(&fdset);
+        FD_SET(tcp_client_socket,&fdset);
+        struct timeval tv;
+        tv.tv_sec=2;
+        tv.tv_usec=0; // 300 MS timeout for select
+        printf("before select in uploading\n");
+        int select_res=select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
+        if(select_res==0)       //we got a timeout
+        {
+            perror("Uploading proccess failed. terminating select_res==0\n");
+            Quit_Program(EXIT_FAILURE);
+        }
+        else if(select_res==-1)
+        {
+            perror("Uploading proccess failed. terminating select_res==-1\n");
+            Quit_Program(EXIT_FAILURE);
+        }
+        else
+        {
+            uint8_t messagetype;
+            int recvres=recv(tcp_client_socket,&messagetype,1,0);
+            if(recvres==0)
+            {
+                perror("lost connection to server\n");
+                Quit_Program(EXIT_FAILURE);
+            }
+            else if(recvres==-1)
+            {
+                perror("failed receiving response in Upload handler\n");
+                Quit_Program(EXIT_FAILURE);
+            }
+            else
+            {
+                switch(messagetype)
+                {
+                    case NEWSTATIONS_REPLY:
+                    {
+                        recv(tcp_client_socket,control_buffer,2,0);
+                        Newstations_handler();
+                        state=LISTENING;
+                        break;
+                    }
+                    case INVALID_REPLY:
+                    {
+                        recv(tcp_client_socket,control_buffer,1,0);
+                        int lentoread=(int)control_buffer[0];
+                        recv(tcp_client_socket,control_buffer,lentoread,0);
+                        Invalid_handler(lentoread);
+                        break;
+                    }
+                    default:
+                    {
+                        printf("Incompatible message received at listen_control,terminating.\n");
+                        Quit_Program(EXIT_FAILURE);
+                        break;
+                    }
+                }
+            }
+
+        }
+
+    }
+    else        // did not send the file fully
+    {
+
+    }
+
+}
+
