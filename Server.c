@@ -49,7 +49,6 @@ typedef struct Client
     pthread_t client_thread;                                     //path to the song on the pc
     int client_sock;                                 //multicast ip for the
     fd_set clientfdset;                                     //fd set for each socket to listen
-    int station_updt;
 } Client;
 //-------------------------Global Variables------------------------------------
 Client clients[MAX_CLIENTS];                    // 100 control thread for max of 100 clients
@@ -148,7 +147,6 @@ int main(int argc,char* argv[])
     server.sin_addr.s_addr=htonl(INADDR_ANY);
     memset(server.sin_zero,'\0',sizeof server.sin_zero);
     struct sockaddr_in client;
-    printf("Creating welcome socket.\n");
     tcp_welcome_socket = socket(AF_INET,SOCK_STREAM,0);
     udp_server_socket=socket(AF_INET,SOCK_DGRAM,0);
     if(tcp_welcome_socket==-1)
@@ -163,7 +161,6 @@ int main(int argc,char* argv[])
     FD_SET(tcp_welcome_socket,&fdset);
     FD_SET(STDIN_FILENO,&fdset);                //add the keyboard to the read fd set to check if server click Q
     int serversize=sizeof(server);
-    printf("Attempting to bind.\n");
     int bindres=bind(tcp_welcome_socket,(struct sockaddr*)&server,(socklen_t)serversize);
     if(bindres==-1)
     {
@@ -171,7 +168,6 @@ int main(int argc,char* argv[])
         Quit_program(Stations);
         return -1;
     }
-    printf("Starting to listen.\n");
     int listenres=listen(tcp_welcome_socket,SOMAXCONN);
     if(listenres==-1)
     {
@@ -182,6 +178,7 @@ int main(int argc,char* argv[])
 
     while(1)
     {
+        printf("This is the Radio sever!\nPress 'p' or 'P' to view the database\nPress 'q' or 'Q' to close the server\n");
         int activity=select(FD_SETSIZE,&fdset,NULL,NULL,NULL);
         if(activity==-1)
         {
@@ -189,10 +186,9 @@ int main(int argc,char* argv[])
             Quit_program(Stations);
 
         }
-        printf("After select,activity=%d\n",activity);
-        if(activity>0)                                                  //there was a change in either STDIN or welcomesocket
+        if(activity>0)                                                  //there was a change in either STDIN or welcome socket
         {
-            if(FD_ISSET(tcp_welcome_socket,&fdset))                 //the change is in the welcoem socket
+            if(FD_ISSET(tcp_welcome_socket,&fdset))                 //the change is in the welcome socket
             {
                 printf("There is a new connection.\n");
                 int clientsize=sizeof(client);
@@ -202,7 +198,6 @@ int main(int argc,char* argv[])
                     perror("Cant accept client to welcome socket.\n");
                     return -1;
                 }
-                printf("New client accepted.\n");
                 int newclientidx=0;
                 for(int q=0;q<MAX_CLIENTS;q++)
                 {
@@ -217,8 +212,6 @@ int main(int argc,char* argv[])
                 pthread_mutex_unlock(&numclients_mutex);
                 pthread_create(&(clients[newclientidx].client_thread),NULL,control_user,&newclientidx);
                 clients[newclientidx].client_sock=newsocket;
-                clients[newclientidx].station_updt = 1;
-
             }
             if(FD_ISSET(STDIN_FILENO,&fdset)) //server pressed a KEY
             {
@@ -251,8 +244,11 @@ void Quit_program(Station* Stations)
      */
     for(int i=0;i<MAX_CLIENTS;i++)                          //close control sockets and the control threads
     {
-        pthread_cancel(clients[i].client_thread);
-        close(clients[i].client_sock);
+        if(clients[i].client_sock!=EMPTY_SOCKET)
+        {
+            pthread_cancel(clients[i].client_thread);
+            close(clients[i].client_sock);
+        }
     }
     for(int i=0;i<num_stations;i++)
     {
@@ -286,7 +282,7 @@ void* stream_song(void* Station_Pointer)
             sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
             struct timespec tim, tim2;
             tim.tv_sec = 0;
-            tim.tv_nsec = (8000*1000);///num_stations
+            tim.tv_nsec = (58000*1000)/num_stations;///num_stations
             nanosleep(&tim,&tim2);
             //pthread_mutex_unlock(&stationsmutex);
         }
@@ -346,7 +342,7 @@ int Stdin_handler(Station* stationsarr)                                     //as
         }
         else        //client pressed neither P nor Q
         {
-            printf("WRONG BUTTON IDIOT\n");
+            printf("Wrong input. Please Enter 'p' or 'q'\n");
         }
     FD_CLR(STDIN_FILENO,&fdset);
 }
@@ -475,7 +471,7 @@ int Established_handler(int index)
 
                     default:
                     {
-                        printf("Incompatible message received at Established handler,terminating.\n");
+                        perror("Incompatible message received at Established handler,terminating.\n");
                         timeout_client(index,"invalid message type\n");
                     }
                 }
@@ -490,7 +486,7 @@ int Established_handler(int index)
         }
         if(count<0)
         {
-            printf("error on receive\n");
+            perror("error on receive\n");
             timeout_client(index,"");
         }
     }
@@ -499,8 +495,8 @@ int Established_handler(int index)
 
 int Downloading_handler(int index)
 {
-    printf("songname: %s\n",(char *)songname);
-    printf("Expected songsize[B]: %d\n",(uint32_t)expected_songsize);
+    printf("Downloading a new song called: %s\n",(char *)songname);
+    printf("The song size is: %d\n",(uint32_t)expected_songsize);
     struct timeval tv;
     tv.tv_sec=3;
     tv.tv_usec=0;
@@ -520,7 +516,6 @@ int Downloading_handler(int index)
         int selectres=select(clients[index].client_sock+1,&clients[index].clientfdset,NULL,NULL,NULL);
         if(selectres==0)        //timeout
         {
-            printf("A\n");
             fclose(file);
             //remove((char *)songname);
             timeout_client(index,"select timeout.\n");
@@ -528,7 +523,6 @@ int Downloading_handler(int index)
         }
         if(selectres==-1)        //error
         {
-            printf("B\n");
             fclose(file);
             //remove((char *)songname);
             timeout_client(index,"select =-1.\n");
@@ -538,9 +532,6 @@ int Downloading_handler(int index)
         {
             int recvres=recv(clients[index].client_sock,buffer,BUFFER_SIZE,MSG_DONTWAIT); //success
             struct timespec tim, tim2;
-//            tim.tv_sec = 0;
-//            tim.tv_nsec = (8000*1000)/num_stations;
-//            nanosleep(&tim,&tim2);
             if(recvres>0)
             {
                 totalbytesreceived+=recvres;
@@ -550,7 +541,6 @@ int Downloading_handler(int index)
             {
                 printf("D\n");
                 fclose(file);
-                //remove((char *)songname);
                 timeout_client(index,"Failed to download the song.\n");
                 return OFFLINE;
             }
@@ -585,6 +575,7 @@ int Downloading_handler(int index)
 
 
 }
+
 int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_len)
 {
     // sends an error message of invalid command to client who typed something stupid
@@ -603,8 +594,8 @@ int send_invalid(int client_index,const char* reply_string,uint8_t reply_string_
 
     }
     return bytes_sent;
-
 }
+
 int send_permit(int client_index)
 {
     uint8_t allow=1;
@@ -633,9 +624,8 @@ int send_permit(int client_index)
     int sendres=send(clients[client_index].client_sock,permitsendbuffer,2,0);
     if(sendres<0)
     {
-        printf("Failed to send on permit res\n");
+        perror("Failed to send on permit res\n");
     }
-    printf("Sent permit from server\n");
     if(allow)
     {
         pthread_mutex_lock(&permitsong_mutex);
@@ -662,7 +652,6 @@ int send_newstations()
 
         if(clients[i].client_sock!=EMPTY_SOCKET)                                                            //client has an open socket
         {
-            printf("Sending newstations to socket %d\n",i);
             int bytes_sent=send(clients[i].client_sock,newstationsbuffer,sizeof(newstationsbuffer),0);
             if (bytes_sent < 0)
             {
@@ -691,7 +680,6 @@ void* control_user(void* client_index)
         {
             case OFFLINE:                                                       // the client has just connected for the first time
             {
-                printf("SEND WELCOME.\n");
                 state=Welcome_handler(index);                              //established
                 break;
             }

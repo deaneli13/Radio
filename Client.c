@@ -112,8 +112,6 @@ int main(int argc,char* argv[])
     //variables
     int server_port = atoi(argv[2]);
     char* server_ip = argv[1];
-    printf("argv1:%s\n",argv[1]);
-    printf("argv2:%s\n",argv[2]);
     tcp_client_socket = socket(AF_INET,SOCK_STREAM,0);
     udp_client_socket=socket(AF_INET,SOCK_DGRAM,0);
     if(tcp_client_socket<0)
@@ -130,38 +128,31 @@ int main(int argc,char* argv[])
         {
             case OFFLINE:
             {
-                printf("State=offline\n");
                 Connect_to_server(server_ip, server_port);//connect
-                state = WAIT_WELCOME;
                 break;
             }
             case LISTENING:
             {
-                printf("State=listening\n");
                 Listen_control();
                 break;
             }
             case WAIT_WELCOME:
             {
-                printf("State=waitwelcome\n");
                 Wait_welcome();
                 break;
             }
             case WAIT_SONGINFO:
             {
-                printf("State=waitsonginfo\n");
                 Change_station_control(nextstationcandidate);           //send asksong, get responce and change enxtstation
                 break;
             }
             case WAIT_APPROVAL:
             {
-                printf("State=waitapproval\n");
                 Approval_handler();
                 break;
             }
             case UPLOADING:
             {
-                //printf("UPLOADING???\n");
                 Uploading_handler();
                 break;
             }
@@ -171,7 +162,6 @@ int main(int argc,char* argv[])
 }
 void* Listen_data(void* no_args)
 {
-    printf("in listen data\n");
     FILE* fp;
     fp= popen("play -t mp3 -> /dev/null 2>&1","w");          //open a command that plays mp3
     struct sockaddr_in addr;
@@ -228,6 +218,7 @@ int Listen_control()
     FD_ZERO(&fdset);
     FD_SET(STDIN_FILENO,&fdset);
     FD_SET(tcp_client_socket,&fdset);
+    printf("Welcome to the Radio!\nPress 's' or 'S' to upload a song\nPress any number between 0 to %d to change station\nPress 'q' or 'Q' to leave\n",numstations);
     int selectres=select(FD_SETSIZE,&fdset,NULL,NULL,NULL);
     if(selectres<0)
     {
@@ -245,10 +236,10 @@ int Listen_control()
                 {
                     case NEWSTATIONS_REPLY:
                     {
-                        printf("newstations reply at LISTEN CONTROL?\n");
                         recv(tcp_client_socket,control_buffer,2,0);
                         Newstations_handler();
                         state=LISTENING;
+                        break;
 
                     }
                     case INVALID_REPLY:
@@ -257,14 +248,19 @@ int Listen_control()
                         int lentoread=(int)control_buffer[0];
                         recv(tcp_client_socket,control_buffer,lentoread,0);
                         Invalid_handler(lentoread);
-
+                        break;
                     }
                     default:
                     {
-                        printf("Incompatible message received at listen_control,terminating.\n");
+                        perror("Incompatible message received at listen_control,terminating.\n");
                         Quit_Program(EXIT_FAILURE);
                     }
                 }
+            }
+            if(count == 0 )                 //  tcp connection lost
+            {
+                perror("The Server crashed\n");
+                Quit_Program(EXIT_FAILURE);
             }
 
         }
@@ -272,7 +268,6 @@ int Listen_control()
         {
             Stdin_handler();
         }
-
     }
 }
 int Connect_to_server(const char* server_ip, int server_port)
@@ -294,7 +289,6 @@ int Connect_to_server(const char* server_ip, int server_port)
     else
     {
         //connection successful
-        printf("Connected to server successfully->waiting for welcome message.\n");
         state=WAIT_WELCOME;
     }
 }
@@ -322,22 +316,17 @@ int Wait_welcome()
     tv.tv_sec=0;
     tv.tv_usec=300*1000; // 300 MS timeout for select
     int select_res=select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
-    printf("Select res in wait welcome: %d\n",select_res);
-
     if (select_res > 0)
     {
 
         //success- we received a message
         int recvres=recv(tcp_client_socket,control_buffer,9,0);
-        printf("recvres=%d\n",recvres);
         if(recvres!= -1)
         {
             // success
-
-            printf("We received 9 bytes of welcome message\n");
             if(control_buffer[0]!=WELCOME_REPLY)
             {
-                printf("the reply is not of type WELCOME.\n");
+                perror("the reply is not of type WELCOME.\n");
                 Quit_Program(EXIT_FAILURE);                         //quit the program
 
             }
@@ -358,7 +347,6 @@ int Wait_welcome()
                 {
                     case NEWSTATIONS_REPLY:
                     {
-                        printf("Newstations reply?\n");
                         recv(tcp_client_socket,control_buffer,2,0);
                         Newstations_handler();
                         state=LISTENING;
@@ -394,12 +382,12 @@ int Wait_welcome()
     }
     else if (select_res==0)
     {
-        printf("Timeout on wait welcome.\n");
+        perror("Timeout on wait welcome.\n");
         Quit_Program(EXIT_FAILURE);
     }
     else if (select_res==-1)
     {
-        printf("ERROR IN SELECT");
+        perror("ERROR IN SELECT");
         Quit_Program(EXIT_FAILURE);
     }
 }
@@ -412,7 +400,7 @@ int Change_station_control()
     Asksongbuffer[1]=temp1[0];
     Asksongbuffer[2]=temp1[1];
     if(send(tcp_client_socket,Asksongbuffer,3*sizeof(uint8_t),0)<0)
-        printf("Send in Change station control failed.\n");
+        perror("Send in Change station control failed.\n");
     FD_ZERO(&fdset);
     FD_SET(tcp_client_socket,&fdset);
     struct timeval tv;
@@ -421,8 +409,6 @@ int Change_station_control()
     while(changestationflag)
     {
         int select_res = select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
-        printf("Select res in change station: %d\n", select_res);
-
         if (select_res > 0)
         {
             //success- we received a message
@@ -460,7 +446,7 @@ int Change_station_control()
                     }
                     default:
                     {
-                        printf("Incompatible message received at listen_control,terminating.\n");
+                        perror("Incompatible message received at listen_control,terminating.\n");
                         Quit_Program(EXIT_FAILURE);
                         break;
                     }
@@ -469,12 +455,12 @@ int Change_station_control()
         }
         else if (select_res==0)
         {
-            printf("Timeout on Change station.\n");
+            perror("Timeout on Change station.\n");
             Quit_Program(EXIT_FAILURE);
         }
         else if (select_res==-1)
         {
-            printf("ERROR IN SELECT in change station\n");
+            perror("ERROR IN SELECT in change station\n");
             Quit_Program(EXIT_FAILURE);
         }
     }
@@ -492,7 +478,6 @@ int Stdin_handler()                                     //assume the change was 
 
     if((buff[0]=='q'||buff[0]=='Q') &&strlen(buff)==1)                      //client pressed Q and wants to exit
     {
-        printf("Quitting the program.\n");
         Quit_Program(EXIT_SUCCESS);
     }
     else if((buff[0]=='s'||buff[0]=='S') &&strlen(buff)==1)                      //client pressed Q and wants to exit
@@ -538,7 +523,7 @@ int Invalid_handler(int len)               // read the control buffer and assume
 {
     for(uint8_t i=0;i<len;i++)
     {
-        putchar(control_buffer[i]);
+        printf("%c",control_buffer[i]);
     }
     Quit_Program(EXIT_FAILURE);
     return 1;
@@ -560,7 +545,6 @@ int Approval_handler()
     fgets(uploadfilebuffer,256,stdin);
     if (strlen(uploadfilebuffer)>0)
         uploadfilebuffer[strlen(uploadfilebuffer)-1]='\0';
-    printf("The song name you entered to upload is: %s\n",uploadfilebuffer);
     if (access(uploadfilebuffer, F_OK) == -1)
     {
         printf("File does not exist in current directory\n");
@@ -575,10 +559,7 @@ int Approval_handler()
         {
             struct stat buffer;
             int filefd= fileno(file);
-            if (fstat(filefd, &buffer) == 0)
-            {
-                printf("File size in bytes: %ld\n", buffer.st_size);
-            }
+            fstat(filefd, &buffer);
             fclose(file);
             uint8_t* sendbuffer=(uint8_t*)malloc(sizeof(uint8_t)*(strlen(uploadfilebuffer)+6));
             sendbuffer[0]=UPSONG_TYPE;
@@ -601,7 +582,6 @@ int Approval_handler()
             FD_SET(tcp_client_socket,&fdset);
             while(upsongflag)
             {
-                printf("in while upsongflag\n");
                 int select_res = select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
                 if (select_res > 0)
                 {
@@ -609,19 +589,16 @@ int Approval_handler()
                     uint8_t message_type;
                     while (recv(tcp_client_socket, &message_type, 1, MSG_DONTWAIT) > 0)
                     {
-                        printf("in while recv upsong\n");
                         switch (message_type)
                         {
                             case NEWSTATIONS_REPLY:
                             {
-                                printf("newstations\n");
                                 recv(tcp_client_socket, control_buffer, 2, 0);
                                 Newstations_handler();
                                 break;
                             }
                             case INVALID_REPLY:
                             {
-                                printf("invalid\n");
                                 recv(tcp_client_socket, control_buffer, 1, 0);
                                 int lentoread = (int) control_buffer[0];
                                 recv(tcp_client_socket, control_buffer, lentoread, 0);
@@ -632,26 +609,22 @@ int Approval_handler()
                             }
                             case PERMIT_REPLY:
                             {
-                                printf("Received PERMIT REPLY\n");
                                 upsongflag = 0;
-                                int wwww=recv(tcp_client_socket, control_buffer, 2, 0);
-                                printf("www=%d\n",wwww);
-                                printf("controlbuffer[0]: %d\n",control_buffer[0]);
-                                printf("controlbuffer[1]: %d\n",control_buffer[1]);
+                                recv(tcp_client_socket, control_buffer, 2, 0);
                                 if(control_buffer[0]==1)
                                     state=UPLOADING;
                                 else if(control_buffer[0]==0)
                                     state=LISTENING;
                                 else
                                     {
-                                        printf("Received invalid permit message.\n");
+                                        perror("Received invalid permit message.\n");
                                         Quit_Program(EXIT_FAILURE);
                                     }
                                 break;
                             }
                             default:
                             {
-                                printf("Incompatible message received at UPSONG REQUEST,terminating.\n");
+                                perror("Incompatible message received at UPSONG REQUEST,terminating.\n");
                                 Quit_Program(EXIT_FAILURE);
                                 break;
                             }
@@ -660,12 +633,12 @@ int Approval_handler()
                 }
                 else if (select_res == 0)               //TIMEOUT
                 {
-                    printf("Timeout on UPSONG REQUEST.\n");
+                    perror("Timeout on UPSONG REQUEST.\n");
                     Quit_Program(EXIT_FAILURE);
                 }
                 else if (select_res == -1)
                 {
-                    printf("ERROR IN SELECT in UPSONG REQUEST\n");
+                    perror("ERROR IN SELECT in UPSONG REQUEST\n");
                     Quit_Program(EXIT_FAILURE);
                 }
             }
@@ -674,7 +647,7 @@ int Approval_handler()
 
         else                                //upload file cannot be opened
         {
-            printf("Error getting file information\n");
+            perror("Error getting file information\n");
         }
     }
 }
@@ -713,6 +686,8 @@ int Uploading_handler()
             Quit_Program(EXIT_FAILURE);
             break;
         }
+        tim.tv_sec = 0;
+        tim.tv_nsec = (8000*1000);
         totalBytesSent += bytesRead;
         printProgress(totalBytesSent, filelen);
         nanosleep(&tim,&tim2);
@@ -725,7 +700,6 @@ int Uploading_handler()
         struct timeval tv;
         tv.tv_sec=2;
         tv.tv_usec=0; // 300 MS timeout for select
-        printf("before select in uploading\n");
         int select_res=select(tcp_client_socket + 1, &fdset, NULL, NULL, &tv);
         if(select_res==0)       //we got a timeout
         {
@@ -784,8 +758,8 @@ int Uploading_handler()
     }
     else        // did not send the file fully
     {
-
+        perror("Failed to sent the file fully");
+        Quit_Program(EXIT_FAILURE);
     }
-
 }
 
