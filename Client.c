@@ -165,38 +165,31 @@ void* Listen_data(void* no_args)
     FILE* fp;
     fp= popen("play -t mp3 -> /dev/null 2>&1","w");          //open a command that plays mp3
     struct sockaddr_in addr;
-    struct ip_mreq mreq;
-    addr.sin_family=AF_INET;
-    addr.sin_port=htons(udp_portnumber);
-    addr.sin_addr.s_addr=htonl(INADDR_ANY);
-    bind(udp_client_socket,(struct sockaddr*)&addr,sizeof(addr));
-    mreq.imr_interface.s_addr= htonl(INADDR_ANY);
-    int rec_size;
-    size_t addrlen=sizeof(addr);
-    struct sockaddr_in multicast_addr;
-    multicast_addr.sin_family=AF_INET;
-    multicast_addr.sin_port=htons(udp_portnumber);
-
-
-
+    socklen_t addrlen=sizeof(addr);
+    struct ip_mreq mreq2;
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(udp_portnumber);
+    bind(udp_client_socket, (struct sockaddr*) &addr, sizeof(addr));
+    mreq2.imr_multiaddr.s_addr = increaseip(initialmulticast,currstation).s_addr;
+    mreq2.imr_interface.s_addr = htonl(INADDR_ANY);
+    setsockopt(udp_client_socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq2, sizeof(mreq2));
     while(1)
     {
-        mreq.imr_multiaddr.s_addr= increaseip(initialmulticast,currstation).s_addr;
-        setsockopt(udp_client_socket,IPPROTO_IP,IP_DROP_MEMBERSHIP,&mreq,sizeof(mreq));//leave current station
-        multicast_addr.sin_addr.s_addr=increaseip(initialmulticast,nextstation).s_addr;
-        mreq.imr_multiaddr.s_addr= increaseip(initialmulticast,nextstation).s_addr;
-        setsockopt(udp_client_socket,IPPROTO_IP,IP_ADD_MEMBERSHIP,&mreq,sizeof(mreq));//join the new station
-        currstation=nextstation;
-        while (1)
+        while(1)
         {
-            memset(data_buffer, '\0', sizeof(data_buffer));
-            rec_size = recvfrom(udp_client_socket, data_buffer, BUFFER_SIZE, 0, (struct sockaddr *) &multicast_addr,&addrlen);
+            int rec_size;
+            rec_size=recvfrom(udp_client_socket, data_buffer, BUFFER_SIZE, 0, (struct sockaddr*) &addr, &addrlen);
             rec_size = fwrite(data_buffer, 1, rec_size, fp);
-            if (nextstation != currstation)
+            if(currstation!=nextstation)
                 break;
-
         }
+        setsockopt(udp_client_socket, IPPROTO_IP, IP_DROP_MEMBERSHIP, &mreq2, sizeof(mreq2));
+        mreq2.imr_multiaddr.s_addr = increaseip(initialmulticast,nextstation).s_addr;
+        setsockopt(udp_client_socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq2, sizeof(mreq2));
+        currstation=nextstation;
     }
+
 }
 void Quit_Program(int reason)                    // reason is EXIT-FAILURE or EXIT-SUCCESS
 {
@@ -616,10 +609,10 @@ int Approval_handler()
                                 else if(control_buffer[0]==0)
                                     state=LISTENING;
                                 else
-                                    {
-                                        perror("Received invalid permit message.\n");
-                                        Quit_Program(EXIT_FAILURE);
-                                    }
+                                {
+                                    perror("Received invalid permit message.\n");
+                                    Quit_Program(EXIT_FAILURE);
+                                }
                                 break;
                             }
                             default:

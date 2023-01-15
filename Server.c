@@ -140,7 +140,7 @@ int main(int argc,char* argv[])
         newaddr=increaseip(newaddr,i);
         Stations[i].multicastip=newaddr.s_addr;
     }
-    pthread_create(&data_thread,NULL,stream_song,Stations);
+
     struct sockaddr_in server;
     server.sin_family=AF_INET;
     server.sin_port=htons(tcp_server_port);
@@ -149,6 +149,7 @@ int main(int argc,char* argv[])
     struct sockaddr_in client;
     tcp_welcome_socket = socket(AF_INET,SOCK_STREAM,0);
     udp_server_socket=socket(AF_INET,SOCK_DGRAM,0);
+    pthread_create(&data_thread,NULL,stream_song,Stations);
     if(tcp_welcome_socket==-1)
     {
         perror("Failed to open tcp server socket.\n");
@@ -262,6 +263,9 @@ void Quit_program(Station* Stations)
 }
 void* stream_song(void* Station_Pointer)
 {
+    int ttl=64;
+    socklen_t len = sizeof(ttl);
+    setsockopt(udp_server_socket, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, len);
     Station* stations=(Station*)Station_Pointer;
     /*
      * stream songs to all stations, one chunk at a time
@@ -269,22 +273,21 @@ void* stream_song(void* Station_Pointer)
     struct sockaddr_in addr;
     addr.sin_family=AF_INET;
     addr.sin_port=htons(udp_server_port);
-
+    uint8_t multicastbuffer[BUFFER_SIZE];
     while(1)
     {
 
         for(int i=0;i<num_stations;i++)
         {
-            //pthread_mutex_lock(&stationsmutex);
-            addr.sin_addr.s_addr=Stations[i].multicastip;
-            if(fread(data_buffer,sizeof(uint8_t),sizeof(data_buffer),Stations[i].fp)==0)
-                rewind(Stations[i].fp);
-            sendto(udp_server_socket,data_buffer,sizeof(data_buffer),0,(struct sockaddr*)&addr,sizeof(addr));
+            addr.sin_addr.s_addr=stations[i].multicastip;
+            printf("the ip is :%s\n", inet_ntoa(addr.sin_addr));
+            int a=fread(multicastbuffer,1,BUFFER_SIZE,Stations[i].fp);
+            rewind(Stations[i].fp);
+            sendto(udp_server_socket,multicastbuffer,a,0,(struct sockaddr*)&addr,sizeof(addr));
             struct timespec tim, tim2;
             tim.tv_sec = 0;
-            tim.tv_nsec = (58000*1000)/num_stations;///num_stations
+            tim.tv_nsec = (62500*1000)/num_stations;///num_stations
             nanosleep(&tim,&tim2);
-            //pthread_mutex_unlock(&stationsmutex);
         }
     }
 
@@ -312,38 +315,38 @@ int Stdin_handler(Station* stationsarr)                                     //as
     int sockfd; // file descriptor of the socket
     struct sockaddr_in addr; // to hold address information
     socklen_t addrlen = sizeof(addr);
-        if((buff[0]=='q'||buff[0]=='Q') &&strlen(buff)==1)                      //server pressed Q and wants to exit
+    if((buff[0]=='q'||buff[0]=='Q') &&strlen(buff)==1)                      //server pressed Q and wants to exit
+    {
+        printf("Quitting the program.\n");
+        Quit_program(stationsarr);
+    }
+    else if((buff[0]=='p'||buff[0]=='P') &&strlen(buff)==1)                      //server pressed P and wants to print all the clients
+    {
+        printf("The clients connected to the radio are:\n");
+        for(int i=0;i<MAX_CLIENTS;i++)
         {
-            printf("Quitting the program.\n");
-            Quit_program(stationsarr);
-        }
-        else if((buff[0]=='p'||buff[0]=='P') &&strlen(buff)==1)                      //server pressed P and wants to print all the clients
-        {
-            printf("The clients connected to the radio are:\n");
-            for(int i=0;i<MAX_CLIENTS;i++)
+            if(clients[i].client_sock!=EMPTY_SOCKET)
             {
-                if(clients[i].client_sock!=EMPTY_SOCKET)
+                int ret = getpeername(clients[i].client_sock, (struct sockaddr *) &addr, &addrlen);
+                if (ret == 0)
                 {
-                    int ret = getpeername(clients[i].client_sock, (struct sockaddr *) &addr, &addrlen);
-                    if (ret == 0)
-                    {
-                        char ip[INET_ADDRSTRLEN];
-                        inet_ntop(AF_INET, &(addr.sin_addr), ip, INET_ADDRSTRLEN);
-                        printf("The IP address of the client is: %s\n", ip);
-                    }
-
+                    char ip[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &(addr.sin_addr), ip, INET_ADDRSTRLEN);
+                    printf("The IP address of the client is: %s\n", ip);
                 }
-            }
-            printf("There are %d stations.\n",num_stations);
-            for(int i=0;i<num_stations;i++)
-            {
-                printf("Station %d plays: %s\n",i,stationsarr[i].filename);
+
             }
         }
-        else        //client pressed neither P nor Q
+        printf("There are %d stations.\n",num_stations);
+        for(int i=0;i<num_stations;i++)
         {
-            printf("Wrong input. Please Enter 'p' or 'q'\n");
+            printf("Station %d plays: %s\n",i,stationsarr[i].filename);
         }
+    }
+    else        //client pressed neither P nor Q
+    {
+        printf("Wrong input. Please Enter 'p' or 'q'\n");
+    }
     FD_CLR(STDIN_FILENO,&fdset);
 }
 int Welcome_handler(int client_index)
@@ -357,7 +360,7 @@ int Welcome_handler(int client_index)
     int selectres=select(FD_SETSIZE,&clients[client_index].clientfdset,NULL,NULL,&tv);
     if(selectres<0)
     {
-        //perror("Failed to select on Listen Control.\n");
+        perror("Failed to select on Listen Control.\n");
     }
     else                                                    //there is a change in one of the fds(STDIN or TCP)
     {
@@ -517,7 +520,7 @@ int Downloading_handler(int index)
         if(selectres==0)        //timeout
         {
             fclose(file);
-            //remove((char *)songname);
+            remove((char *)songname);
             timeout_client(index,"select timeout.\n");
             return OFFLINE;
         }
@@ -539,7 +542,6 @@ int Downloading_handler(int index)
             }
             else        //either the client dc or there was an error
             {
-                printf("D\n");
                 fclose(file);
                 timeout_client(index,"Failed to download the song.\n");
                 return OFFLINE;
@@ -556,7 +558,7 @@ int Downloading_handler(int index)
         fclose(file);
         if(rename("tempfile",(char *)songname)==-1)
             perror("Failed renaming the file.\n");
-        Stations = (Station *) realloc(Stations, sizeof(Station) * num_stations+1);
+        Stations = (Station *) realloc(Stations, sizeof(Station) * (num_stations+1));
         Stations[num_stations].filename = (char *) malloc(sizeof(char) * strlen((char *) songname));
         strcpy(Stations[num_stations].filename, (char *) songname);
         Stations[num_stations].fp=fopen((char*)songname,"r");
