@@ -282,7 +282,8 @@ void* stream_song(void* Station_Pointer)
             addr.sin_addr.s_addr=stations[i].multicastip;
             printf("the ip is :%s\n", inet_ntoa(addr.sin_addr));
             int a=fread(multicastbuffer,1,BUFFER_SIZE,Stations[i].fp);
-            rewind(Stations[i].fp);
+            if(a==0)
+                rewind(Stations[i].fp);
             sendto(udp_server_socket,multicastbuffer,a,0,(struct sockaddr*)&addr,sizeof(addr));
             struct timespec tim, tim2;
             tim.tv_sec = 0;
